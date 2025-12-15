@@ -1,0 +1,52 @@
+#!/bin/sh
+# Git hook: commit-msg
+#
+# Enforces semantic commit messages:
+#   <type>(<scope>): <subject>
+#
+# - <type>: one of the allowed types below
+# - <scope>: optional, free-form (no newline), usually the module / area
+# - <subject>: short description, imperative mood
+
+commit_msg_file="$1"
+# Only validate the first line; allow any body below it
+subject_line="$(head -n1 "$commit_msg_file")"
+
+# Ignore merge commits
+if echo "$subject_line" | grep -qE "^Merge"; then
+    exit 0
+fi
+
+# Ignore revert commits
+if echo "$subject_line" | grep -qE "^Revert"; then
+    exit 0
+fi
+
+pattern='^(feat|fix|refactor|revert|chore|docs|style|perf|test|build|ci)(\(.+\))?: .+'
+
+if ! echo "$subject_line" | grep -qE "$pattern"; then
+    echo "✖ ERROR: Invalid commit message format"
+    echo
+    echo "Commit message must follow: <type>(<scope>): <subject>"
+    echo
+    echo "Allowed types:"
+    echo "      feat: new feature for the user"
+    echo "       fix: bug fix for the user"
+    echo "      docs: documentation only"
+    echo "     style: formatting / non-functional style changes"
+    echo "  refactor: refactoring production code (no behavior change)"
+    echo "      test: tests only (no production code change)"
+    echo "     chore: infra/chore work; no production code change"
+    echo "    revert: reverting a previous commit"
+    echo "      perf: performance improvements"
+    echo "     build: changes to build system or dependencies"
+    echo "        ci: changes to CI/CD configuration files and scripts"
+    echo
+    echo "Your commit subject:"
+    echo "---"
+    echo "$subject_line"
+    echo "---"
+    exit 1
+fi
+
+exit 0

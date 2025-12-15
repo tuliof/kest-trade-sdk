@@ -1,0 +1,51 @@
+#!/bin/sh
+# Git hook: pre-push
+#
+# 1. Run checks and tests
+# 2. Validate branch naming convention
+#
+# Allowed branch pattern:
+#   <prefix>/<description>
+#   prefix:      feature|fix|hotfix|release|docs|chore
+#   description: kebab-case slug (lowercase letters, numbers, hyphens)
+
+echo "Running pre-push checks..."
+
+# Run type checking, linting, license checks, and unit tests
+bun run check || exit 1
+bun run test:unit || exit 1
+
+echo "✓ All checks passed"
+
+pattern='^(feature|fix|hotfix|release|docs|chore)\/[a-z0-9-]+$'
+
+branch_name="$(git rev-parse --abbrev-ref HEAD)"
+
+# Allow main and develop branches
+if [ "$branch_name" = "main" ] || [ "$branch_name" = "develop" ]; then
+  exit 0
+fi
+
+if ! printf '%s\n' "$branch_name" | grep -Eq "$pattern"; then
+  echo "✖ Invalid branch name: '$branch_name'"
+  echo
+  echo "Allowed format:"
+  echo "  <prefix>/<description>"
+  echo
+  echo "Prefixes:"
+  echo "  feature/, fix/, hotfix/, release/, docs/, chore/"
+  echo
+  echo "Description must be kebab-case (lowercase, numbers, and hyphens only)"
+  echo
+  echo "Examples:"
+  echo "  fix/token-refresh-issue"
+  echo "  feature/oauth2-support"
+  echo "  docs/update-readme"
+  echo "  chore/add-husky"
+  echo
+  echo "To rename the current branch:"
+  echo "  git branch -m <new-name>"
+  exit 1
+fi
+
+exit 0

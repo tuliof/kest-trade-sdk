@@ -1,0 +1,53 @@
+# Source files (only publish dist/)
+# Keep .d.ts files but exclude regular .ts
+!*.d.ts
+!*.d.ts.map
+*.ts
+src/
+
+# Tests
+test/
+tests/
+*.test.ts
+*.test.js
+*.spec.ts
+*.spec.js
+
+# Development files
+.husky/
+.github/
+examples/
+
+# Config files
+tsconfig.json
+biome.json
+.env
+.env.*
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Dependencies (users will install their own)
+node_modules/
+
+# Build artifacts
+coverage/
+.turbo/

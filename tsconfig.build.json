@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Override dev settings for production build
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist",
+
+    // Use Node resolution for compatibility
+    "moduleResolution": "node",
+    "module": "ESNext",
+
+    // Disable bundler-only features
+    "allowImportingTsExtensions": false,
+    "verbatimModuleSyntax": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["test/**/*", "**/*.test.ts", "**/*.spec.ts", "node_modules"]
+}

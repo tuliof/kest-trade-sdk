@@ -1,0 +1,25 @@
+# EditorConfig helps maintain consistent coding styles across different editors and IDEs
+# https://editorconfig.org
+# Aligned with biome.json configuration
+
+root = true
+
+# All files
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{js,jsx,ts,tsx,json}]
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
