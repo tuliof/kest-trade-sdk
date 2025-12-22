@@ -38,7 +38,7 @@
     "prepublishOnly": "bun run lint && bun run test:unit && bun run build"
   },
   "dependencies": {
-    "zod": "^4.1.13"
+    "zod": "^4.2.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.8",
