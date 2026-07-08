@@ -145,7 +145,7 @@ export function createTokenStorage(config?: TokenStorageConfig): ITokenStorage {
       case 'memory':
         return new MemoryTokenStorage()
       default:
-        return new EnvTokenStorage()
+        throw new Error(`Unknown token storage type: ${JSON.stringify(storageConfig)}`)
     }
   }
 
@@ -158,7 +158,7 @@ export function createTokenStorage(config?: TokenStorageConfig): ITokenStorage {
     case 'memory':
       return new MemoryTokenStorage()
     default:
-      return new EnvTokenStorage()
+      throw new Error(`Unknown token storage type: ${JSON.stringify(storageConfig)}`)
   }
 }
 
