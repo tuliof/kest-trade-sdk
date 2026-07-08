@@ -154,8 +154,14 @@ export class QuestradeClient {
 
   constructor(config: QuestradeClientConfig) {
     // Validate configuration
-    if (!config.refreshToken && (!config.accessToken || !config.apiServer)) {
-      throw new Error('Either refreshToken or (accessToken + apiServer) must be provided')
+    if (
+      !config.refreshToken &&
+      (!config.accessToken || !config.apiServer) &&
+      !config.tokenStorage
+    ) {
+      throw new Error(
+        'Either refreshToken, (accessToken + apiServer), or tokenStorage must be provided',
+      )
     }
 
     // Set defaults
@@ -184,33 +190,31 @@ export class QuestradeClient {
    * initialization. Subsequent runs will automatically retrieve the token from secure storage.
    */
   async initialize(): Promise<void> {
-    if (this.config.refreshToken || !(this.config.accessToken && this.config.apiServer)) {
-      // Try to load token from storage if not provided in config
-      let refreshToken: string | null = this.config.refreshToken || null
-      if (!refreshToken) {
-        refreshToken = await this.tokenStorage.get()
-      }
-
-      if (!refreshToken && !this.config.accessToken) {
-        throw new Error(
-          'No refresh token available. Provide refreshToken in config or initialize with a valid token first.',
-        )
-      }
-
-      if (refreshToken) {
-        this.config.refreshToken = refreshToken
-        // Authenticate with refresh token
-        await this.refreshAccessToken()
-      }
-    } else if (this.config.accessToken && this.config.apiServer) {
-      // Use existing access token
+    // Use existing access token if provided
+    if (this.config.accessToken && this.config.apiServer) {
       this.httpClient = new HttpClient(
         this.config.apiServer,
         this.config.accessToken,
         this.config.logger,
       )
       this.initializeClients()
+      return
     }
+
+    // Load refresh token from config or storage
+    let refreshToken: string | null = this.config.refreshToken || null
+    if (!refreshToken) {
+      refreshToken = await this.tokenStorage.get()
+    }
+
+    if (!refreshToken) {
+      throw new Error(
+        'No refresh token available. Provide refreshToken in config, initialize with a valid token first, or ensure tokenStorage has a saved token.',
+      )
+    }
+
+    this.config.refreshToken = refreshToken
+    await this.refreshAccessToken()
   }
 
   /**
