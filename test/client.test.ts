@@ -40,12 +40,15 @@ describe('QuestradeClient', () => {
   describe('constructor', () => {
     test('should throw error if no authentication credentials provided', () => {
       expect(() => new QuestradeClient({})).toThrow(
-        'Either refreshToken or (accessToken + apiServer) must be provided',
+        'Either refreshToken, (accessToken + apiServer), or tokenStorage must be provided',
       )
     })
 
     test('should create client with refresh token', () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
       expect(client).toBeDefined()
     })
 
@@ -59,12 +62,15 @@ describe('QuestradeClient', () => {
 
     test('should throw error if access token provided without api server', () => {
       expect(() => new QuestradeClient({ accessToken: 'test_access_token' })).toThrow(
-        'Either refreshToken or (accessToken + apiServer) must be provided',
+        'Either refreshToken, (accessToken + apiServer), or tokenStorage must be provided',
       )
     })
 
     test('should set default config values', () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
       expect(client).toBeDefined()
       // Auto-refresh should be true by default
       // Refresh buffer should be 60 seconds by default
@@ -73,6 +79,7 @@ describe('QuestradeClient', () => {
     test('should allow custom config values', () => {
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
         autoRefresh: false,
         refreshBuffer: 120,
       })
@@ -82,7 +89,10 @@ describe('QuestradeClient', () => {
 
   describe('initialize', () => {
     test('should initialize with refresh token', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       const mockRefreshToken = mock(async () => mockTokenResponse)
       AuthClient.prototype.refreshToken = mockRefreshToken
@@ -105,7 +115,10 @@ describe('QuestradeClient', () => {
     })
 
     test('should initialize sub-clients after authentication', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
 
@@ -120,7 +133,10 @@ describe('QuestradeClient', () => {
 
   describe('refreshAccessToken', () => {
     test('should refresh access token', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       const mockRefreshToken = mock(async () => mockTokenResponse)
       AuthClient.prototype.refreshToken = mockRefreshToken
@@ -132,7 +148,10 @@ describe('QuestradeClient', () => {
     })
 
     test('should update current token after refresh', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
 
@@ -155,7 +174,10 @@ describe('QuestradeClient', () => {
     })
 
     test('should update refresh token for next use', async () => {
-      const client = new QuestradeClient({ refreshToken: 'old_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'old_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       const newTokenResponse = {
         ...mockTokenResponse,
@@ -176,7 +198,10 @@ describe('QuestradeClient', () => {
     })
 
     test('should initialize clients after refresh', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
 
@@ -194,6 +219,7 @@ describe('QuestradeClient', () => {
 
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
         onTokenRefresh,
       })
 
@@ -216,6 +242,7 @@ describe('QuestradeClient', () => {
 
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
         onTokenRefresh,
       })
 
@@ -231,6 +258,7 @@ describe('QuestradeClient', () => {
     test('should schedule token refresh when autoRefresh is enabled', async () => {
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
         autoRefresh: true,
         refreshBuffer: 60,
       })
@@ -248,6 +276,7 @@ describe('QuestradeClient', () => {
     test('should not schedule token refresh when autoRefresh is disabled', async () => {
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
         autoRefresh: false,
       })
 
@@ -263,6 +292,7 @@ describe('QuestradeClient', () => {
     test('should use custom refresh buffer', async () => {
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
         autoRefresh: true,
         refreshBuffer: 120,
       })
@@ -279,7 +309,10 @@ describe('QuestradeClient', () => {
 
   describe('sub-client access', () => {
     test('should provide access to accounts client after initialization', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
 
@@ -290,7 +323,10 @@ describe('QuestradeClient', () => {
     })
 
     test('should provide access to market client after initialization', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
 
@@ -301,20 +337,29 @@ describe('QuestradeClient', () => {
     })
 
     test('should provide access to auth client', () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       const auth = client.auth
       expect(auth).toBeInstanceOf(AuthClient)
     })
 
     test('should throw error when accessing accounts client before initialization', () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       expect(() => client.accounts).toThrow('Client not initialized. Call initialize() first.')
     })
 
     test('should throw error when accessing market client before initialization', () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       expect(() => client.market).toThrow('Client not initialized. Call initialize() first.')
     })
@@ -322,7 +367,10 @@ describe('QuestradeClient', () => {
 
   describe('token status methods', () => {
     test('should check if token is expired', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
       AuthClient.prototype.isTokenExpired = mock(() => false)
@@ -333,7 +381,10 @@ describe('QuestradeClient', () => {
     })
 
     test('should check if token is expiring soon', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
       AuthClient.prototype.isTokenExpiringSoon = mock(() => true)
@@ -344,7 +395,10 @@ describe('QuestradeClient', () => {
     })
 
     test('should get current token', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
 
@@ -354,7 +408,10 @@ describe('QuestradeClient', () => {
     })
 
     test('should return undefined for current token before initialization with refresh token', () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       expect(client.getCurrentToken()).toBeUndefined()
     })
@@ -375,6 +432,7 @@ describe('QuestradeClient', () => {
     test('should cleanup resources', async () => {
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
         autoRefresh: true,
       })
 
@@ -393,7 +451,7 @@ describe('QuestradeClient', () => {
 
   describe('error handling', () => {
     test('should propagate authentication errors during initialization', async () => {
-      const client = new QuestradeClient({ refreshToken: 'invalid_token' })
+      const client = new QuestradeClient({ refreshToken: 'invalid_token', tokenStorage: 'memory' })
 
       AuthClient.prototype.refreshToken = mock(async () => {
         throw new Error('Invalid refresh token')
@@ -403,7 +461,10 @@ describe('QuestradeClient', () => {
     })
 
     test('should propagate authentication errors during refresh', async () => {
-      const client = new QuestradeClient({ refreshToken: 'test_refresh_token' })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+      })
 
       AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
 
@@ -420,6 +481,7 @@ describe('QuestradeClient', () => {
     test('should handle auto-refresh failures gracefully', async () => {
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
         autoRefresh: true,
         refreshBuffer: 0.01, // Very short buffer for testing
       })
@@ -438,6 +500,7 @@ describe('QuestradeClient', () => {
     test('should support full authentication flow with chained operations', async () => {
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
         autoRefresh: false,
       })
 
