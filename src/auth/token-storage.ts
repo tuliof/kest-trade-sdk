@@ -271,6 +271,10 @@ export class EnvTokenStorage implements ITokenStorage {
     this.varName = varName
   }
 
+  private escapeVarName(): string {
+    return this.varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+
   async get(): Promise<string | null> {
     try {
       if (typeof process === 'undefined' || !process.cwd) {
@@ -289,7 +293,7 @@ export class EnvTokenStorage implements ITokenStorage {
       }
 
       const content = await envFile.text()
-      const match = content.match(new RegExp(`^${this.varName}=(.*)$`, 'm'))
+      const match = content.match(new RegExp(`^${this.escapeVarName()}=(.*)$`, 'm'))
 
       return match?.[1] || null
     } catch (error) {
@@ -321,7 +325,7 @@ export class EnvTokenStorage implements ITokenStorage {
 
       if (envContent.includes(`${this.varName}=`)) {
         const updated = envContent.replace(
-          new RegExp(`${this.varName}=.*`),
+          new RegExp(`${this.escapeVarName()}=.*`),
           `${this.varName}=${refreshToken}`,
         )
         await Bun.write(fullPath, updated)
@@ -359,7 +363,7 @@ export class EnvTokenStorage implements ITokenStorage {
       }
 
       const content = await envFile.text()
-      const updated = content.replace(new RegExp(`^${this.varName}=.*\n?`, 'm'), '')
+      const updated = content.replace(new RegExp(`^${this.escapeVarName()}=.*\n?`, 'm'), '')
 
       if (updated.trim() === '') {
         await unlink(fullPath)
