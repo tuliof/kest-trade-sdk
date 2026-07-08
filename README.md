@@ -12,7 +12,7 @@ Refer to the [Questrade API documentation](https://www.questrade.com/api/documen
 
 - ✅ **Full TypeScript support** with comprehensive type definitions
 - 🔄 **Automatic token rotation** - Questrade refresh tokens are automatically updated
-- 🔐 **Token persistence** - Save rotated tokens automatically via callbacks
+- 🔐 **Pluggable token storage** - Secure (OS keychain), env file, or memory backends
 - 🧪 **Comprehensive test coverage** with unit and integration tests
 - 📦 **Zero dependencies** (except Zod for validation)
 - ⚡ **Built with Bun** for maximum performance
@@ -33,11 +33,12 @@ bun add kest-trade-sdk
 ## Quick Start
 
 ```typescript
-import { QuestradeClient } from 'kest-trade-sdk'
+import { QuestradeClient, TokenStorageType } from 'kest-trade-sdk'
 
-// Simple initialization - tokens are saved to .env automatically!
+// Tokens are saved to secure storage automatically!
 const client = new QuestradeClient({
   refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
+  tokenStorage: TokenStorageType.SECURE, // default: TokenStorageType.ENV
 })
 
 await client.initialize()
@@ -58,8 +59,11 @@ console.log(quotes)
 The SDK handles this automatically:
 
 - Updates the internal token state
-- Saves the new token to `.env` file (default)
-- Calls your custom `onTokenRefresh` callback (if provided)
+- Saves the new token to the configured `tokenStorage` backend (default: `.env`)
+- Calls your custom `onTokenRefresh` callback (if provided, for additional logic)
+
+See [TOKEN_MANAGEMENT.md](./TOKEN_MANAGEMENT.md) for full documentation of
+storage backends (secure, env, memory) and failure recovery.
 
 **Important:** You must persist the new refresh token, otherwise you'll need to manually generate a new one from the Questrade dashboard.
 
@@ -80,9 +84,13 @@ await client.initialize()
 const client = new QuestradeClient({
   refreshToken: 'your_refresh_token',
 
-  // Optional: Custom token persistence
+  // Token storage backend (default: 'env')
+  // 'secure' = OS keychain | 'env' = .env file | 'memory' = in-memory only
+  tokenStorage: 'secure',
+
+  // Optional: Additional custom logic after SDK saves the token
   onTokenRefresh: async (token) => {
-    await db.saveRefreshToken(token.refresh_token)
+    await db.logTokenRotation(token.refresh_token)
   },
 
   // Optional: Auto-refresh before expiry (default: true)
@@ -90,6 +98,13 @@ const client = new QuestradeClient({
   refreshBuffer: 60,
 })
 await client.initialize()
+```
+
+**Subsequent runs with secure storage** — no need to provide `refreshToken`:
+
+```typescript
+const client = new QuestradeClient({ tokenStorage: 'secure' })
+await client.initialize() // Loads token from OS keychain
 ```
 
 ## Examples
@@ -151,7 +166,7 @@ QUESTRADE_REFRESH_TOKEN=your_token_here
 - [x] Add authorization methods
 - [x] Add account calls methods
 - [x] Add market calls methods
-- [ ] Improve security practices for token storage
+- [x] Improve security practices for token storage
 - [ ] Add [Streaming](https://www.questrade.com/api/documentation/streaming) API support
 - [ ] Add [buy/sell order](https://www.questrade.com/api/documentation/rest-operations/order-calls) methods
 
