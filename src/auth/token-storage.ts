@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
+import { unlink } from 'node:fs/promises'
+
 /**
  * Token storage abstraction for managing Questrade refresh tokens
  * Supports multiple backends: OS keychain (Bun.secrets), .env file, memory, and custom
@@ -360,8 +362,7 @@ export class EnvTokenStorage implements ITokenStorage {
       const updated = content.replace(new RegExp(`^${this.varName}=.*\n?`, 'm'), '')
 
       if (updated.trim() === '') {
-        // Delete file if empty
-        await Bun.spawn(['rm', fullPath])
+        await unlink(fullPath)
         console.log(`✅ ${this.envPath} file deleted`)
       } else {
         await Bun.write(fullPath, updated)
