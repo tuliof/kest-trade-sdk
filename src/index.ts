@@ -21,6 +21,7 @@ export {
   SecureTokenStorage,
   type StorageConfig,
   type TokenStorageConfig,
+  TokenStorageError,
   TokenStorageType,
   type TokenStorageTypeValue,
 } from './auth/token-storage'

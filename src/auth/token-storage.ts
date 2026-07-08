@@ -49,6 +49,28 @@ export interface ITokenStorage {
   delete(): Promise<void>
 }
 
+/**
+ * Error thrown when token storage fails after a token has been rotated.
+ * The new refresh token is attached as a non-enumerable property so it
+ * does not appear in default log serialization but can be recovered
+ * programmatically via `error.refreshToken`.
+ */
+export class TokenStorageError extends Error {
+  /** The refresh token that could not be stored (non-enumerable) */
+  declare readonly refreshToken: string
+
+  constructor(message: string, refreshToken: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'TokenStorageError'
+    Object.defineProperty(this, 'refreshToken', {
+      value: refreshToken,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    })
+  }
+}
+
 export interface StorageConfig {
   type: 'secure' | 'env' | 'memory'
 }
@@ -183,18 +205,17 @@ export class SecureTokenStorage implements ITokenStorage {
   }
 
   async set(refreshToken: string): Promise<void> {
+    const secrets = this.secrets as
+      | {
+          set: (opts: { service: string; name: string; value: string }) => Promise<void>
+        }
+      | undefined
+
+    if (!secrets?.set) {
+      throw new TokenStorageError('Bun.secrets is not available in this environment', refreshToken)
+    }
+
     try {
-      const secrets = this.secrets as
-        | {
-            set: (opts: { service: string; name: string; value: string }) => Promise<void>
-          }
-        | undefined
-
-      if (!secrets?.set) {
-        console.warn('⚠️  Bun.secrets not available in this environment')
-        throw new Error('Bun.secrets is not available')
-      }
-
       await secrets.set({
         service: this.service,
         name: this.name,
@@ -202,8 +223,9 @@ export class SecureTokenStorage implements ITokenStorage {
       })
       console.log('✅ Token stored securely in OS keychain')
     } catch (error) {
-      console.error(`❌ Failed to store token in secure storage:`, error)
-      throw error
+      throw new TokenStorageError('Failed to store token in secure storage', refreshToken, {
+        cause: error,
+      })
     }
   }
 
@@ -275,34 +297,27 @@ export class EnvTokenStorage implements ITokenStorage {
   }
 
   async set(refreshToken: string): Promise<void> {
+    if (typeof process === 'undefined' || !process.cwd) {
+      throw new TokenStorageError('Cannot save token: not in Node.js/Bun environment', refreshToken)
+    }
+
+    const fullPath = this.envPath.startsWith('/')
+      ? this.envPath
+      : `${process.cwd()}/${this.envPath}`
+
     try {
-      if (typeof process === 'undefined' || !process.cwd) {
-        console.warn('⚠️  Token rotated but cannot auto-save (not in Node.js/Bun environment)')
-        console.warn('   New refresh token:', refreshToken)
-        console.warn('   Please save this token manually!')
-        return
-      }
-
-      const fullPath = this.envPath.startsWith('/')
-        ? this.envPath
-        : `${process.cwd()}/${this.envPath}`
-
       const envFile = Bun.file(fullPath)
       const exists = await envFile.exists()
 
       if (!exists) {
-        // Create new .env file
         await Bun.write(fullPath, `${this.varName}=${refreshToken}\n`)
         console.log(`✅ Token saved to new ${this.envPath} file`)
         return
       }
 
-      // Read existing .env file
       const envContent = await envFile.text()
 
-      // Check if variable exists in the file
       if (envContent.includes(`${this.varName}=`)) {
-        // Replace existing token
         const updated = envContent.replace(
           new RegExp(`${this.varName}=.*`),
           `${this.varName}=${refreshToken}`,
@@ -310,16 +325,17 @@ export class EnvTokenStorage implements ITokenStorage {
         await Bun.write(fullPath, updated)
         console.log(`✅ Token refreshed and saved to ${this.envPath} file`)
       } else {
-        // Append new token
         const updated = `${envContent.trimEnd()}\n${this.varName}=${refreshToken}\n`
         await Bun.write(fullPath, updated)
         console.log(`✅ Token saved to ${this.envPath} file`)
       }
     } catch (error) {
-      console.error(`❌ Failed to save token to ${this.envPath}:`, error)
-      console.warn('   New refresh token:', refreshToken)
-      console.warn('   Please save this token manually!')
-      throw error
+      if (error instanceof TokenStorageError) {
+        throw error
+      }
+      throw new TokenStorageError(`Failed to save token to ${this.envPath}`, refreshToken, {
+        cause: error,
+      })
     }
   }
 

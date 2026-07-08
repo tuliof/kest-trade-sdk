@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 import { AccountsClient } from '@/accounts/accounts-client'
 import { AuthClient } from '@/auth/auth-client'
-import { createTokenStorage, type TokenStorageConfig, TokenStorageType } from '@/auth/token-storage'
+import {
+  createTokenStorage,
+  type TokenStorageConfig,
+  TokenStorageError,
+  TokenStorageType,
+} from '@/auth/token-storage'
 import { HttpClient } from '@/http/http-client'
 import type { LoggerOptions } from '@/http/logger'
 import { MarketClient } from '@/market/market-client'
@@ -258,15 +263,8 @@ export class QuestradeClient {
     // Update refresh token for next use (CRITICAL: tokens are rotated)
     this.config.refreshToken = tokenResponse.refresh_token
 
-    // Save to configured storage automatically
-    await this.tokenStorage.set(tokenResponse.refresh_token)
-
-    // Invoke callback if provided (for additional custom logic)
-    if (this.config.onTokenRefresh) {
-      await this.config.onTokenRefresh(tokenResponse)
-    }
-
-    // Create or update HTTP client
+    // Create or update HTTP client first, so the client remains usable
+    // even if token storage fails
     this.httpClient = new HttpClient(
       tokenResponse.api_server,
       tokenResponse.access_token,
@@ -277,6 +275,32 @@ export class QuestradeClient {
     // Schedule auto-refresh if enabled
     if (this.config.autoRefresh) {
       this.scheduleTokenRefresh()
+    }
+
+    // Save to configured storage — may throw TokenStorageError
+    // carrying the new token for manual recovery
+    let storageError: TokenStorageError | null = null
+    try {
+      await this.tokenStorage.set(tokenResponse.refresh_token)
+    } catch (error) {
+      storageError =
+        error instanceof TokenStorageError
+          ? error
+          : new TokenStorageError(
+              `Failed to save token to storage: ${error instanceof Error ? error.message : String(error)}`,
+              tokenResponse.refresh_token,
+              { cause: error },
+            )
+    }
+
+    // Invoke callback if provided (for additional custom logic)
+    if (this.config.onTokenRefresh) {
+      await this.config.onTokenRefresh(tokenResponse)
+    }
+
+    // Surface storage error after callback, so the caller can recover the token
+    if (storageError) {
+      throw storageError
     }
 
     return tokenResponse
