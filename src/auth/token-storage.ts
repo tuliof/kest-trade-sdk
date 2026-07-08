@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSD-3-Clause
-import { unlink } from 'node:fs/promises'
+import { unlink, writeFile } from 'node:fs/promises'
 
 /**
  * Token storage abstraction for managing Questrade refresh tokens
@@ -316,7 +316,7 @@ export class EnvTokenStorage implements ITokenStorage {
       const exists = await envFile.exists()
 
       if (!exists) {
-        await Bun.write(fullPath, `${this.varName}=${refreshToken}\n`)
+        await writeFile(fullPath, `${this.varName}=${refreshToken}\n`, { mode: 0o600 })
         console.log(`✅ Token saved to new ${this.envPath} file`)
         return
       }
@@ -328,11 +328,11 @@ export class EnvTokenStorage implements ITokenStorage {
           new RegExp(`${this.escapeVarName()}=.*`),
           `${this.varName}=${refreshToken}`,
         )
-        await Bun.write(fullPath, updated)
+        await writeFile(fullPath, updated, { mode: 0o600 })
         console.log(`✅ Token refreshed and saved to ${this.envPath} file`)
       } else {
         const updated = `${envContent.trimEnd()}\n${this.varName}=${refreshToken}\n`
-        await Bun.write(fullPath, updated)
+        await writeFile(fullPath, updated, { mode: 0o600 })
         console.log(`✅ Token saved to ${this.envPath} file`)
       }
     } catch (error) {
@@ -369,7 +369,7 @@ export class EnvTokenStorage implements ITokenStorage {
         await unlink(fullPath)
         console.log(`✅ ${this.envPath} file deleted`)
       } else {
-        await Bun.write(fullPath, updated)
+        await writeFile(fullPath, updated, { mode: 0o600 })
         console.log(`✅ Token removed from ${this.envPath}`)
       }
     } catch (error) {
