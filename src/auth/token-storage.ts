@@ -244,7 +244,8 @@ export class SecureTokenStorage implements ITokenStorage {
         throw new Error('Bun.secrets is not available')
       }
 
-      // Bun.secrets doesn't have a delete method yet, set to empty string as workaround
+      // TODO: Replace with Bun.secrets.delete when available
+      // Currently sets value to empty string as workaround (entry persists in keychain)
       await secrets.set({
         service: this.service,
         name: this.name,
