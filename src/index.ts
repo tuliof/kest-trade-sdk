@@ -9,6 +9,21 @@
 // Sub-clients
 export { AccountsClient } from './accounts/accounts-client'
 export { AuthClient } from './auth/auth-client'
+// Token Storage
+export {
+  createTokenStorage,
+  type EnvStorageConfig,
+  EnvTokenStorage,
+  type ITokenStorage,
+  type MemoryStorageConfig,
+  MemoryTokenStorage,
+  type SecureStorageConfig,
+  SecureTokenStorage,
+  type StorageConfig,
+  type TokenStorageConfig,
+  TokenStorageType,
+  type TokenStorageTypeValue,
+} from './auth/token-storage'
 // Main client
 export { QuestradeClient, type QuestradeClientConfig } from './client'
 export { HttpClient } from './http/http-client'

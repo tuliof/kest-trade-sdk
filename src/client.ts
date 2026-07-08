@@ -1,64 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 import { AccountsClient } from '@/accounts/accounts-client'
 import { AuthClient } from '@/auth/auth-client'
+import { createTokenStorage, type TokenStorageConfig, TokenStorageType } from '@/auth/token-storage'
 import { HttpClient } from '@/http/http-client'
 import type { LoggerOptions } from '@/http/logger'
 import { MarketClient } from '@/market/market-client'
 import type { TokenResponse } from '@/types/auth'
-
-/**
- * Default token persistence handler that saves the refresh token to .env file
- * This is used when no custom onTokenRefresh callback is provided
- *
- * Uses Bun's native file I/O APIs for optimal performance
- */
-async function defaultTokenPersistence(token: TokenResponse): Promise<void> {
-  try {
-    // Only available in Node.js/Bun environments
-    if (typeof process === 'undefined' || !process.cwd) {
-      console.warn('⚠️  Token rotated but cannot auto-save (not in Node.js/Bun environment)')
-      console.warn('   New refresh token:', token.refresh_token)
-      console.warn('   Please save this token manually!')
-      return
-    }
-
-    const envPath = `${process.cwd()}/.env`
-    const envFile = Bun.file(envPath)
-
-    // Check if .env file exists
-    const exists = await envFile.exists()
-
-    if (!exists) {
-      // Create new .env file
-      await Bun.write(envPath, `QUESTRADE_REFRESH_TOKEN=${token.refresh_token}\n`)
-      console.log('✅ Token saved to new .env file')
-      return
-    }
-
-    // Read existing .env file
-    const envContent = await envFile.text()
-
-    // Check if QUESTRADE_REFRESH_TOKEN exists in the file
-    if (envContent.includes('QUESTRADE_REFRESH_TOKEN=')) {
-      // Replace existing token
-      const updated = envContent.replace(
-        /QUESTRADE_REFRESH_TOKEN=.*/,
-        `QUESTRADE_REFRESH_TOKEN=${token.refresh_token}`,
-      )
-      await Bun.write(envPath, updated)
-      console.log('✅ Token refreshed and saved to .env file')
-    } else {
-      // Append new token
-      const updated = `${envContent.trimEnd()}\nQUESTRADE_REFRESH_TOKEN=${token.refresh_token}\n`
-      await Bun.write(envPath, updated)
-      console.log('✅ Token saved to .env file')
-    }
-  } catch (error) {
-    console.error('❌ Failed to save token to .env file:', error)
-    console.warn('   New refresh token:', token.refresh_token)
-    console.warn('   Please save this token manually!')
-  }
-}
 
 /**
  * Configuration options for QuestradeClient
@@ -67,6 +14,9 @@ export interface QuestradeClientConfig {
   /**
    * Refresh token for authentication
    * Either refreshToken or (accessToken + apiServer) must be provided
+   *
+   * When using tokenStorage: 'secure', this is only needed on first initialization.
+   * Subsequent runs will retrieve the token from secure storage automatically.
    */
   refreshToken?: string
 
@@ -82,6 +32,34 @@ export interface QuestradeClientConfig {
   apiServer?: string
 
   /**
+   * Token storage strategy
+   * - 'secure': Use OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+   * - 'env': Save to .env file (default for backward compatibility)
+   * - 'memory': In-memory only (not persistent, useful for testing)
+   * - Custom config: Provide SecureStorageConfig or EnvStorageConfig for more control
+   *
+   * @default TokenStorageType.ENV
+   *
+   * @example Using secure storage with constants
+   * ```typescript
+   * const { TokenStorageType } = require('kest-trade-sdk')
+   * const client = new QuestradeClient({
+   *   tokenStorage: TokenStorageType.SECURE,
+   *   refreshToken: 'initial_token', // Only needed first time
+   * })
+   * ```
+   *
+   * @example Using .env file (backward compatible)
+   * ```typescript
+   * const client = new QuestradeClient({
+   *   tokenStorage: TokenStorageType.ENV,
+   *   refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
+   * })
+   * ```
+   */
+  tokenStorage?: TokenStorageConfig
+
+  /**
    * Auto-refresh token before expiry (default: true)
    * When enabled, tokens will be refreshed automatically when they're about to expire
    */
@@ -95,33 +73,25 @@ export interface QuestradeClientConfig {
   /**
    * Callback invoked whenever a token is refreshed
    *
-   * **Default Behavior**: If not provided, tokens are automatically saved to `.env` file
-   * in the current working directory. The SDK will create the file if it doesn't exist
-   * or update the `QUESTRADE_REFRESH_TOKEN` variable if it does.
+   * **Default Behavior**: If not provided, tokens are automatically saved using the
+   * configured tokenStorage strategy (secure storage, .env file, etc.).
    *
    * **Custom Behavior**: Provide your own callback to save tokens to a database,
-   * secure storage, or any other location.
+   * or for custom logic.
    *
    * IMPORTANT: Questrade rotates refresh tokens on each use. The old refresh token
    * becomes invalid immediately. The SDK handles saving the new token automatically
-   * using either the default behavior or your custom callback.
+   * using either the tokenStorage strategy or your custom callback.
    *
    * @param tokenResponse - The new token response containing the rotated refresh_token
    *
-   * @example Default (saves to .env automatically)
+   * @example Custom persistence with database
    * ```typescript
    * const client = new QuestradeClient({
-   *   refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
-   *   // onTokenRefresh not needed - saves to .env by default!
-   * })
-   * ```
-   *
-   * @example Custom persistence
-   * ```typescript
-   * const client = new QuestradeClient({
-   *   refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
+   *   tokenStorage: 'secure',
+   *   refreshToken: 'initial_token',
    *   onTokenRefresh: async (token) => {
-   *     // Save to database, secure storage, etc.
+   *     // Also save to database for auditing
    *     await db.saveRefreshToken(token.refresh_token)
    *   }
    * })
@@ -154,8 +124,13 @@ export interface QuestradeClientConfig {
  *
  * @example
  * ```typescript
- * // Initialize with refresh token
- * const client = new QuestradeClient({ refreshToken: 'your_refresh_token' })
+ * import { QuestradeClient, TokenStorageType } from 'kest-trade-sdk'
+ *
+ * // Initialize with refresh token (saves to secure storage automatically)
+ * const client = new QuestradeClient({
+ *   tokenStorage: TokenStorageType.SECURE,
+ *   refreshToken: 'your_refresh_token'
+ * })
  * await client.initialize()
  *
  * // Get accounts
@@ -173,6 +148,7 @@ export class QuestradeClient {
   private config: Omit<Required<QuestradeClientConfig>, 'onTokenRefresh'> & {
     onTokenRefresh?: (tokenResponse: TokenResponse) => void | Promise<void>
   }
+  private tokenStorage: Awaited<ReturnType<typeof createTokenStorage>>
   private currentToken?: TokenResponse
   private refreshTimerId?: Timer
 
@@ -190,9 +166,12 @@ export class QuestradeClient {
       autoRefresh: config.autoRefresh ?? true,
       refreshBuffer: config.refreshBuffer ?? 60,
       logger: config.logger ?? { level: 'none' },
-      // Use default token persistence if no callback provided
-      onTokenRefresh: config.onTokenRefresh ?? defaultTokenPersistence,
+      tokenStorage: config.tokenStorage ?? TokenStorageType.ENV,
+      onTokenRefresh: config.onTokenRefresh,
     }
+
+    // Create token storage instance
+    this.tokenStorage = createTokenStorage(this.config.tokenStorage)
 
     this.authClient = new AuthClient()
   }
@@ -200,11 +179,29 @@ export class QuestradeClient {
   /**
    * Initialize the client and authenticate
    * Must be called before using any API methods
+   *
+   * When using tokenStorage: 'secure', the initial refreshToken is only needed on first
+   * initialization. Subsequent runs will automatically retrieve the token from secure storage.
    */
   async initialize(): Promise<void> {
-    if (this.config.refreshToken) {
-      // Authenticate with refresh token
-      await this.refreshAccessToken()
+    if (this.config.refreshToken || !(this.config.accessToken && this.config.apiServer)) {
+      // Try to load token from storage if not provided in config
+      let refreshToken: string | null = this.config.refreshToken || null
+      if (!refreshToken) {
+        refreshToken = await this.tokenStorage.get()
+      }
+
+      if (!refreshToken && !this.config.accessToken) {
+        throw new Error(
+          'No refresh token available. Provide refreshToken in config or initialize with a valid token first.',
+        )
+      }
+
+      if (refreshToken) {
+        this.config.refreshToken = refreshToken
+        // Authenticate with refresh token
+        await this.refreshAccessToken()
+      }
     } else if (this.config.accessToken && this.config.apiServer) {
       // Use existing access token
       this.httpClient = new HttpClient(
@@ -226,12 +223,13 @@ export class QuestradeClient {
    *
    * This means:
    * 1. You MUST save the new refresh_token from the response
-   * 2. Use the onTokenRefresh callback to persist it (to .env, database, etc.)
-   * 3. If you don't save it, you'll need to manually generate a new one from the
+   * 2. The SDK automatically saves it using the configured tokenStorage strategy
+   * 3. If you don't persist it, you'll need to manually generate a new one from the
    *    Questrade dashboard the next time you initialize the SDK
    *
    * The SDK handles this automatically by:
    * - Updating the internal refresh token state
+   * - Saving to configured storage (secure, env file, etc.)
    * - Calling your onTokenRefresh callback (if provided)
    * - Using the new token for subsequent refreshes
    *
@@ -242,8 +240,7 @@ export class QuestradeClient {
    * ```typescript
    * // Manual refresh
    * const newToken = await client.refreshAccessToken()
-   * console.log('New refresh token:', newToken.refresh_token)
-   * // Make sure to save this new token!
+   * console.log('New refresh token saved automatically')
    * ```
    */
   async refreshAccessToken(): Promise<TokenResponse> {
@@ -257,7 +254,10 @@ export class QuestradeClient {
     // Update refresh token for next use (CRITICAL: tokens are rotated)
     this.config.refreshToken = tokenResponse.refresh_token
 
-    // Invoke callback to allow user to persist the new token
+    // Save to configured storage automatically
+    await this.tokenStorage.set(tokenResponse.refresh_token)
+
+    // Invoke callback if provided (for additional custom logic)
     if (this.config.onTokenRefresh) {
       await this.config.onTokenRefresh(tokenResponse)
     }
