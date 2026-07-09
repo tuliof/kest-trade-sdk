@@ -492,7 +492,7 @@ describe('QuestradeClient', () => {
       await client.initialize()
 
       // Auto-refresh should fail silently and not crash the app
-      // (In real scenario, this would be logged to console.error)
+      // (Logged via logger.error, not console.error)
     })
   })
 

@@ -3,12 +3,14 @@ import { AccountsClient } from '@/accounts/accounts-client'
 import { AuthClient } from '@/auth/auth-client'
 import {
   createTokenStorage,
+  type ITokenStorage,
   type TokenStorageConfig,
   TokenStorageError,
   TokenStorageType,
 } from '@/auth/token-storage'
 import { HttpClient } from '@/http/http-client'
-import type { LoggerOptions } from '@/http/logger'
+import type { HttpLogOptions } from '@/http/logger'
+import { createLogger, type Logger, type LogLevel, SilentLogger } from '@/logger'
 import { MarketClient } from '@/market/market-client'
 import type { TokenResponse } from '@/types/auth'
 
@@ -105,22 +107,33 @@ export interface QuestradeClientConfig {
   onTokenRefresh?: (tokenResponse: TokenResponse) => void | Promise<void>
 
   /**
-   * Logger configuration for HTTP request/response logging
-   * Useful for debugging and monitoring API calls
+   * Logger for SDK operations (HTTP, token storage, errors)
+   * Accept a Logger instance or a LogLevel string.
+   * Default: silent (no output).
    *
    * @example Enable debug logging
    * ```typescript
    * const client = new QuestradeClient({
    *   refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
-   *   logger: {
-   *     level: 'debug',
-   *     logRequestBody: true,
-   *     logResponseBody: true,
-   *   }
+   *   logger: 'debug',
+   * })
+   * ```
+   *
+   * @example Custom logger for Datadog
+   * ```typescript
+   * const client = new QuestradeClient({
+   *   logger: new DatadogLogger(),
    * })
    * ```
    */
-  logger?: LoggerOptions
+  logger?: Logger | LogLevel
+
+  /**
+   * HTTP-specific log formatting options
+   * Controls what data is included in HTTP log entries (headers, body, etc.)
+   * Only relevant when logger is enabled.
+   */
+  httpLogOptions?: HttpLogOptions
 }
 
 /**
@@ -150,10 +163,18 @@ export class QuestradeClient {
   private httpClient?: HttpClient
   private _accounts?: AccountsClient
   private _market?: MarketClient
-  private config: Omit<Required<QuestradeClientConfig>, 'onTokenRefresh'> & {
+  private logger: Logger
+  private config: {
+    refreshToken: string
+    accessToken: string
+    apiServer: string
+    autoRefresh: boolean
+    refreshBuffer: number
+    tokenStorage: TokenStorageConfig
+    httpLogOptions: HttpLogOptions
     onTokenRefresh?: (tokenResponse: TokenResponse) => void | Promise<void>
   }
-  private tokenStorage: Awaited<ReturnType<typeof createTokenStorage>>
+  private tokenStorage: ITokenStorage
   private currentToken?: TokenResponse
   private refreshTimerId?: Timer
 
@@ -169,6 +190,12 @@ export class QuestradeClient {
       )
     }
 
+    // Resolve logger: string level → ConsoleLogger, Logger instance → as-is, undefined → silent
+    this.logger =
+      typeof config.logger === 'string'
+        ? createLogger(config.logger)
+        : (config.logger ?? new SilentLogger())
+
     // Set defaults
     this.config = {
       refreshToken: config.refreshToken || '',
@@ -176,13 +203,13 @@ export class QuestradeClient {
       apiServer: config.apiServer || '',
       autoRefresh: config.autoRefresh ?? true,
       refreshBuffer: config.refreshBuffer ?? 60,
-      logger: config.logger ?? { level: 'none' },
       tokenStorage: config.tokenStorage ?? TokenStorageType.ENV,
+      httpLogOptions: config.httpLogOptions ?? {},
       onTokenRefresh: config.onTokenRefresh,
     }
 
     // Create token storage instance
-    this.tokenStorage = createTokenStorage(this.config.tokenStorage)
+    this.tokenStorage = createTokenStorage(this.config.tokenStorage, this.logger)
 
     this.authClient = new AuthClient()
   }
@@ -200,7 +227,8 @@ export class QuestradeClient {
       this.httpClient = new HttpClient(
         this.config.apiServer,
         this.config.accessToken,
-        this.config.logger,
+        this.logger,
+        this.config.httpLogOptions,
       )
       this.initializeClients()
       return
@@ -268,7 +296,8 @@ export class QuestradeClient {
     this.httpClient = new HttpClient(
       tokenResponse.api_server,
       tokenResponse.access_token,
-      this.config.logger,
+      this.logger,
+      this.config.httpLogOptions,
     )
     this.initializeClients()
 
@@ -334,7 +363,9 @@ export class QuestradeClient {
         try {
           await this.refreshAccessToken()
         } catch (error) {
-          console.error('Auto-refresh failed:', error)
+          this.logger.error('Auto-refresh failed', {
+            error: error instanceof Error ? error.message : String(error),
+          })
         }
       }, delay)
     }
@@ -380,23 +411,27 @@ export class QuestradeClient {
   }
 
   /**
-   * Update logger options dynamically
-   * @param options - New logger options to merge with existing options
+   * Update the logger instance
+   * @param logger - New logger to use for all SDK operations
    */
-  public setLoggerOptions(options: Partial<LoggerOptions>): void {
-    this.config.logger = {
-      ...this.config.logger,
-      ...options,
-    }
-    // Update HttpClient logger if it exists
-    this.httpClient?.setLoggerOptions(options)
+  public setLogger(logger: Logger): void {
+    this.logger = logger
+    this.httpClient?.setLogger(logger)
   }
 
   /**
-   * Get current logger options
+   * Get the current logger instance
    */
-  public getLoggerOptions(): Readonly<Required<LoggerOptions>> | undefined {
-    return this.httpClient?.getLoggerOptions()
+  public getLogger(): Logger {
+    return this.logger
+  }
+
+  /**
+   * Update HTTP log formatting options
+   * @param options - New HTTP log options
+   */
+  public setHttpLogOptions(options: HttpLogOptions): void {
+    this.config.httpLogOptions = options
   }
 
   /**

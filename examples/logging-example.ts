@@ -5,7 +5,7 @@
  * for debugging and monitoring API calls.
  */
 
-import { QuestradeClient } from '../src/index'
+import { ConsoleLogger, type Logger, QuestradeClient } from '../src/index'
 
 async function main() {
   // Example 1: Enable debug logging with full details
@@ -13,8 +13,8 @@ async function main() {
 
   const debugClient = new QuestradeClient({
     refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
-    logger: {
-      level: 'debug',
+    logger: 'debug',
+    httpLogOptions: {
       logRequestHeaders: true, // Access tokens are redacted, showing only last 4 chars
       logRequestBody: true,
       logResponseHeaders: true,
@@ -31,42 +31,35 @@ async function main() {
 
   const prodClient = new QuestradeClient({
     refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
-    logger: {
-      level: 'error', // Only log errors
-    },
+    logger: 'error', // Only log errors
   })
 
   await prodClient.initialize()
   console.log('Fetching market data with error-only logging...')
   await prodClient.market.getMarkets()
 
-  // Example 3: Custom logger function
+  // Example 3: Custom Logger implementation
   console.log('\n\n=== Example 3: Custom Logger ===\n')
+
+  const customLogger: Logger = {
+    debug(message, context) {
+      console.debug(`[DEBUG] ${message}`, context ?? '')
+    },
+    info(message, context) {
+      console.info(`[INFO] ${message}`, context ?? '')
+    },
+    warn(message, context) {
+      console.warn(`[WARN] ${message}`, context ?? '')
+    },
+    error(message, context) {
+      console.error(`[ERROR] ${message}`, context ?? '')
+    },
+  }
 
   const customClient = new QuestradeClient({
     refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
-    logger: {
-      level: 'info',
-      logResponseBody: true,
-      logger: (entry) => {
-        // Custom formatting
-        const timestamp = new Date(entry.timestamp).toLocaleTimeString()
-        const entryType = (entry as { type?: string }).type || 'LOG'
-        console.log(`[${timestamp}] ${entryType} ${entry.method} ${entry.url}`)
-
-        if (entry.responseStatus) {
-          console.log(`  Status: ${entry.responseStatus}`)
-        }
-
-        if (entry.duration) {
-          console.log(`  Duration: ${entry.duration}ms`)
-        }
-
-        if (entry.error) {
-          console.error(`  Error: ${entry.error.message}`)
-        }
-      },
-    },
+    logger: customLogger,
+    httpLogOptions: { logResponseBody: true },
   })
 
   await customClient.initialize()
@@ -79,8 +72,8 @@ async function main() {
 
   const redactClient = new QuestradeClient({
     refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
-    logger: {
-      level: 'debug',
+    logger: 'debug',
+    httpLogOptions: {
       logRequestHeaders: true,
       logResponseBody: true,
       // Custom redaction to hide account numbers
@@ -125,27 +118,20 @@ async function main() {
 
   const dynamicClient = new QuestradeClient({
     refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
-    logger: {
-      level: 'none', // Start with no logging
-    },
+    logger: 'none', // Start with no logging
   })
 
   await dynamicClient.initialize()
 
   // Enable logging dynamically
   console.log('Enabling debug logging...')
-  dynamicClient.setLoggerOptions({
-    level: 'debug',
-    logResponseBody: true,
-  })
+  dynamicClient.setLogger(new ConsoleLogger('debug'))
 
   await dynamicClient.market.getMarkets()
 
   // Disable logging
   console.log('\nDisabling logging...')
-  dynamicClient.setLoggerOptions({
-    level: 'none',
-  })
+  dynamicClient.setLogger(new ConsoleLogger('none'))
 
   await dynamicClient.market.getMarkets()
   console.log('(No logs should appear above)')

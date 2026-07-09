@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
+import { type Logger, SilentLogger } from '@/logger'
 import { APIErrorSchema, AuthenticationError, NetworkError, RateLimitError } from '@/types/errors'
-import { HttpLogger, type LoggerOptions } from './logger'
+import {
+  formatErrorEntry,
+  formatRequestEntry,
+  formatResponseEntry,
+  getResponseLogLevel,
+  type HttpLogOptions,
+} from './logger'
 
 /**
  * HTTP Client for making requests to the Questrade API
@@ -9,19 +16,26 @@ import { HttpLogger, type LoggerOptions } from './logger'
 export class HttpClient {
   private apiServer: string
   private accessToken: string
-  private logger: HttpLogger
+  private logger: Logger
+  private logOptions: HttpLogOptions
 
   /**
    * Create a new HTTP client
    * @param apiServer - The API server URL (e.g., "https://api01.iq.questrade.com/")
    * @param accessToken - The Bearer access token
-   * @param loggerOptions - Optional logger configuration for request/response logging
+   * @param logger - Logger for request/response/error logging (default: silent)
+   * @param logOptions - HTTP-specific log formatting options
    */
-  constructor(apiServer: string, accessToken: string, loggerOptions?: LoggerOptions) {
-    // Remove trailing slash for consistency
+  constructor(
+    apiServer: string,
+    accessToken: string,
+    logger: Logger = new SilentLogger(),
+    logOptions: HttpLogOptions = {},
+  ) {
     this.apiServer = apiServer.endsWith('/') ? apiServer.slice(0, -1) : apiServer
     this.accessToken = accessToken
-    this.logger = new HttpLogger(loggerOptions)
+    this.logger = logger
+    this.logOptions = logOptions
   }
 
   /**
@@ -33,18 +47,11 @@ export class HttpClient {
   }
 
   /**
-   * Update logger options
-   * @param options - New logger options
+   * Update the logger
+   * @param logger - New logger instance
    */
-  public setLoggerOptions(options: Partial<LoggerOptions>): void {
-    this.logger.setOptions(options)
-  }
-
-  /**
-   * Get current logger options
-   */
-  public getLoggerOptions(): Readonly<Required<LoggerOptions>> {
-    return this.logger.getOptions()
+  public setLogger(logger: Logger): void {
+    this.logger = logger
   }
 
   /**
@@ -121,7 +128,10 @@ export class HttpClient {
     }
 
     // Log request
-    this.logger.logRequest(method, url, requestHeaders, options.body)
+    this.logger.debug(
+      'HTTP Request',
+      formatRequestEntry(method, url, requestHeaders, options.body, this.logOptions),
+    )
 
     try {
       const response = await fetch(url, {
@@ -139,7 +149,19 @@ export class HttpClient {
       response.headers.forEach((value, key) => {
         responseHeaders[key] = value
       })
-      this.logger.logResponse(method, url, response.status, responseHeaders, responseBody, duration)
+      const level = getResponseLogLevel(response.status)
+      const responseEntry = formatResponseEntry(
+        method,
+        url,
+        response.status,
+        responseHeaders,
+        responseBody,
+        duration,
+        this.logOptions,
+      )
+      if (level === 'error') this.logger.error('HTTP Response', responseEntry)
+      else if (level === 'warn') this.logger.warn('HTTP Response', responseEntry)
+      else this.logger.info('HTTP Response', responseEntry)
 
       // Handle non-2xx responses
       if (!response.ok) {
@@ -156,7 +178,10 @@ export class HttpClient {
         error instanceof RateLimitError ||
         error instanceof NetworkError
       ) {
-        this.logger.logError(method, url, error, duration)
+        this.logger.error(
+          'HTTP Error',
+          formatErrorEntry(method, url, error, duration, this.logOptions),
+        )
         throw error
       }
 
@@ -164,7 +189,10 @@ export class HttpClient {
       const networkError = new NetworkError('Network request failed', undefined, undefined, {
         cause: error,
       })
-      this.logger.logError(method, url, networkError, duration)
+      this.logger.error(
+        'HTTP Error',
+        formatErrorEntry(method, url, networkError, duration, this.logOptions),
+      )
       throw networkError
     }
   }

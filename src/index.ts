@@ -28,21 +28,16 @@ export {
 // Main client
 export { QuestradeClient, type QuestradeClientConfig } from './client'
 export { HttpClient } from './http/http-client'
+// HTTP logging utilities
+export { type HttpLogOptions, type LogEntry, redactToken } from './http/logger'
 // Logger
 export {
-  HttpLogger,
-  type LogEntry,
-  type LoggerOptions,
-  type LogLevel,
-  redactToken,
-} from './http/logger'
-// Logger
-export {
+  ConsoleLogger,
+  createLogger,
   type LogContext,
   type Logger,
-  ConsoleLogger,
+  type LogLevel,
   SilentLogger,
-  createLogger,
 } from './logger'
 export { MarketClient } from './market/market-client'
 export type {

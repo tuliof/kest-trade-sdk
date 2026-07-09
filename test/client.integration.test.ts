@@ -31,20 +31,14 @@ describe('QuestradeClient Integration Tests', () => {
     // Initialize a SHARED client instance for all tests
     client = new QuestradeClient({
       refreshToken: REFRESH_TOKEN,
-      logger: {
-        level: 'debug',
-        logResponseBody: true,
-        logger: (entry) => {
-          // Use JSON.stringify with depth to properly see nested objects
-          console.log(JSON.stringify(entry, null, 2))
-        },
-      },
+      logger: 'debug',
+      httpLogOptions: { logResponseBody: true },
       autoRefresh: false, // Disable auto-refresh for testing
     })
 
     await client.initialize()
 
-    console.log('✅ Shared integration test client initialized')
+    console.log('Shared integration test client initialized')
     console.log(`   API Server: ${client.getCurrentToken()?.api_server}`)
     console.log(`   Token expires in: ${client.getCurrentToken()?.expires_in} seconds`)
   })
@@ -53,7 +47,7 @@ describe('QuestradeClient Integration Tests', () => {
     // Clean up resources
     if (client) {
       client.dispose()
-      console.log('✅ Shared client disposed')
+      console.log('Shared client disposed')
     }
   })
 
@@ -104,7 +98,7 @@ describe('QuestradeClient Integration Tests', () => {
     expect(searchResponse.symbols).toBeDefined()
     expect(Array.isArray(searchResponse.symbols)).toBe(true)
 
-    console.log(`✅ Found ${searchResponse.symbols.length} symbols for 'AAPL'`)
+    console.log(`Found ${searchResponse.symbols.length} symbols for 'AAPL'`)
 
     if (searchResponse.symbols.length > 0) {
       const firstSymbol = searchResponse.symbols[0]
@@ -119,7 +113,7 @@ describe('QuestradeClient Integration Tests', () => {
       expect(Array.isArray(quotesResponse.quotes)).toBe(true)
       expect(quotesResponse.quotes.length).toBeGreaterThan(0)
 
-      console.log(`✅ Fetched quote for ${firstSymbol.symbol}`)
+      console.log(`Fetched quote for ${firstSymbol.symbol}`)
     }
   })
 
@@ -135,7 +129,7 @@ describe('QuestradeClient Integration Tests', () => {
     expect(newToken.access_token).not.toBe(oldToken?.access_token)
     expect(newToken.refresh_token).toBeDefined()
 
-    console.log(`✅ Token refreshed successfully`)
+    console.log(`Token refreshed successfully`)
     console.log(`   New access token: ${redactToken(newToken.access_token)}`)
     console.log(`   New refresh token saved to .env`)
 
@@ -143,7 +137,7 @@ describe('QuestradeClient Integration Tests', () => {
     const accountsResponse = await client.accounts.getAccounts()
     expect(accountsResponse.accounts).toBeDefined()
 
-    console.log('✅ Client functional after token refresh')
+    console.log('Client functional after token refresh')
   })
 
   test('should check token expiration status', async () => {
@@ -154,7 +148,7 @@ describe('QuestradeClient Integration Tests', () => {
     // Practice tokens typically have 30-minute expiry
     expect(client.isTokenExpiringSoon(60)).toBe(false)
 
-    console.log('✅ Token expiration status verified')
+    console.log('Token expiration status verified')
   })
 
   test('should support using existing access token', async () => {
@@ -179,7 +173,7 @@ describe('QuestradeClient Integration Tests', () => {
 
     accessTokenClient.dispose()
 
-    console.log('✅ Access token-only client works correctly')
+    console.log('Access token-only client works correctly')
   })
 
   test('should cleanup resources on dispose', async () => {
@@ -203,7 +197,7 @@ describe('QuestradeClient Integration Tests', () => {
     // Should be safe to call multiple times
     expect(() => tempClient.dispose()).not.toThrow()
 
-    console.log('✅ Client disposal works correctly')
+    console.log('Client disposal works correctly')
   })
 
   test('should handle concurrent API calls', async () => {
@@ -218,7 +212,7 @@ describe('QuestradeClient Integration Tests', () => {
     expect(marketsResponse.markets).toBeDefined()
     expect(searchResponse.symbols).toBeDefined()
 
-    console.log('✅ Concurrent API calls successful')
+    console.log('Concurrent API calls successful')
   })
 
   test('should support time-range queries', async () => {
@@ -241,7 +235,7 @@ describe('QuestradeClient Integration Tests', () => {
       expect(activitiesResponse.activities).toBeDefined()
       expect(Array.isArray(activitiesResponse.activities)).toBe(true)
 
-      console.log(`✅ Fetched ${activitiesResponse.activities.length} activities for last 7 days`)
+      console.log(`Fetched ${activitiesResponse.activities.length} activities for last 7 days`)
 
       // Get executions for the last 7 days
       const executionsResponse = await client.accounts.getExecutions(accountId, startDate, endDate)
@@ -255,7 +249,7 @@ describe('QuestradeClient Integration Tests', () => {
       expect(ordersResponse.orders).toBeDefined()
       expect(Array.isArray(ordersResponse.orders)).toBe(true)
 
-      console.log('✅ Time-range queries successful')
+      console.log('Time-range queries successful')
     }
   })
 })
@@ -272,7 +266,7 @@ describe('QuestradeClient Error Handling', () => {
 
   test('should handle initialization without credentials', () => {
     expect(() => new QuestradeClient({})).toThrow(
-      'Either refreshToken or (accessToken + apiServer) must be provided',
+      'Either refreshToken, (accessToken + apiServer), or tokenStorage must be provided',
     )
   })
 
