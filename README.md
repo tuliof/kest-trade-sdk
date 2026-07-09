@@ -107,6 +107,20 @@ const client = new QuestradeClient({ tokenStorage: 'secure' })
 await client.initialize() // Loads token from OS keychain
 ```
 
+## Logging
+
+The SDK is silent by default. Enable logging with a single config option:
+
+```typescript
+const client = new QuestradeClient({
+  refreshToken: '...',
+  logger: 'debug',  // 'debug' | 'info' | 'warn' | 'error' | 'none'
+})
+```
+
+See [LOGGING.md](./LOGGING.md) for log levels, HTTP request/response details,
+custom loggers (Datadog, CloudWatch), redaction, and dynamic configuration.
+
 ## Examples
 
 For practical usage patterns, see the [examples/](./examples/) folder:
