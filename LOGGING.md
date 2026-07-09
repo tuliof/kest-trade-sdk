@@ -14,7 +14,9 @@ const client = new QuestradeClient({
 })
 ```
 
-That's it. You'll see HTTP requests, responses, and token storage events in the console.
+That's it. You'll see HTTP requests, responses (with headers and bodies),
+and token storage events in the console. Sensitive data like tokens and
+Authorization headers are automatically redacted.
 
 ## Log Levels
 
@@ -44,21 +46,29 @@ Output format: `[LEVEL] Message {"key":"value"}`
 
 ## HTTP Request/Response Details
 
-By default, `debug` shows `method`, `url`, `status`, and `duration` — but **not**
-headers or bodies. To include them, use `httpLogOptions`:
+When logging is enabled, request/response headers and bodies are included
+by default — with sensitive data automatically redacted (see below).
+
+To suppress specific details:
 
 ```typescript
 const client = new QuestradeClient({
   refreshToken: '...',
   logger: 'debug',
   httpLogOptions: {
-    logRequestHeaders: true,   // Authorization header (redacted)
-    logRequestBody: true,      // POST body (tokens redacted)
-    logResponseHeaders: true,  // Content-Type, etc.
-    logResponseBody: true,     // JSON response body (tokens redacted)
+    logRequestBody: false,     // Don't log request bodies
+    logResponseBody: false,    // Don't log response bodies (e.g., large payloads)
   },
 })
 ```
+
+| Option                  | Default | What it controls                          |
+| ----------------------- | ------- | ------------------------------------------ |
+| `logRequestHeaders`     | `true`  | Request headers (Authorization redacted)  |
+| `logRequestBody`        | `true`  | Request body (tokens redacted)            |
+| `logResponseHeaders`    | `true`  | Response headers                           |
+| `logResponseBody`       | `true`  | Response body (tokens redacted)           |
+| `redactFn`              | default | Custom redaction function                 |
 
 ### Redaction
 
@@ -141,10 +151,10 @@ client.setLogger(new ConsoleLogger('none'))
 
 ## Defaults Summary
 
-| Setting                  | Default     | Why                                             |
-| ------------------------ | ----------- | ------------------------------------------------ |
-| Logger                   | Silent      | SDKs should not produce output unless asked      |
-| HTTP headers in logs     | Off         | Security — avoid leaking auth headers            |
-| HTTP body in logs        | Off         | Security — avoid leaking tokens in request body  |
-| Redaction                | On          | Can't accidentally log `access_token`/`refresh_token` |
-| `httpLogOptions`         | `{}`        | No headers/body unless explicitly requested      |
+| Setting                  | Default  | Why                                                |
+| ------------------------ | -------- | -------------------------------------------------- |
+| Logger                   | Silent   | SDKs should not produce output unless asked         |
+| HTTP headers in logs     | On       | Redaction protects auth tokens — one opt-in gate   |
+| HTTP body in logs        | On       | Redaction protects access/refresh tokens            |
+| Redaction                | On       | Can't accidentally log `access_token`/`refresh_token` |
+| `httpLogOptions`         | All on   | Suppressed via `false` per option — not a second gate |

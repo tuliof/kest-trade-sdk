@@ -204,7 +204,13 @@ export class QuestradeClient {
       autoRefresh: config.autoRefresh ?? true,
       refreshBuffer: config.refreshBuffer ?? 60,
       tokenStorage: config.tokenStorage ?? TokenStorageType.ENV,
-      httpLogOptions: config.httpLogOptions ?? {},
+      httpLogOptions: {
+        logRequestHeaders: true,
+        logRequestBody: true,
+        logResponseHeaders: true,
+        logResponseBody: true,
+        ...config.httpLogOptions,
+      },
       onTokenRefresh: config.onTokenRefresh,
     }
 
