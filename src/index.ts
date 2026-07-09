@@ -36,6 +36,14 @@ export {
   type LogLevel,
   redactToken,
 } from './http/logger'
+// Logger
+export {
+  type LogContext,
+  type Logger,
+  ConsoleLogger,
+  SilentLogger,
+  createLogger,
+} from './logger'
 export { MarketClient } from './market/market-client'
 export type {
   // Account types
