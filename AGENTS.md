@@ -123,3 +123,24 @@ Before submitting code for review, verify:
 - **License header**: SPDX BSD-3-Clause on all source files (auto-managed by `license:check`)
 - **No comments** unless explaining *why* (not *what*). The code should explain *what*.
 - **Commits**: Atomic, focused on a single concern. Conventional commits format (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`).
+
+## No-Emoji Policy
+
+This SDK handles financial data. Emojis are casual and unprofessional — they
+must not appear in source code, log output, test output, or documentation.
+Use structured messages with log levels (`[INFO]`, `[WARN]`, `[ERROR]`) instead.
+
+## Logging Pattern
+
+All SDK components use a single `Logger` interface (`src/logger.ts`):
+
+- **`Logger` interface**: `debug`/`info`/`warn`/`error` with structured `LogContext`
+- **`SilentLogger`**: default (no-op) — SDK is silent unless configured
+- **`ConsoleLogger`**: level-based console output with `[LEVEL] message {context}` format
+- **`createLogger(level)`:** factory accepting `LogLevel` string
+
+`QuestradeClient` accepts `logger: Logger | LogLevel` and flows the same
+instance to `HttpClient` and token storage. HTTP-specific formatting
+(selective headers/body, redaction) is handled by utility functions in
+`src/http/logger.ts` before calling the `Logger`. No `HttpLogger` class —
+formatting is a utility concern, not a logger concern.
