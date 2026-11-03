@@ -176,8 +176,8 @@ export class AuthClient {
       // Use default error message if parsing fails
     }
 
-    // OAuth endpoints typically return 401 for invalid tokens
-    if (statusCode === 401 || statusCode === 403) {
+    // RFC 6749 section 5.2: a rejected grant (used, expired or revoked refresh token) is a 400
+    if (statusCode === 400 || statusCode === 401 || statusCode === 403) {
       throw new AuthenticationError(errorMessage || 'Authentication failed', apiErrorCode)
     }
 

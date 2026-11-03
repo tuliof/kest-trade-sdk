@@ -47,10 +47,8 @@ describe('QuestradeClient', () => {
   })
 
   describe('constructor', () => {
-    test('should throw error if no authentication credentials provided', () => {
-      expect(() => new QuestradeClient({})).toThrow(
-        'Either refreshToken, (accessToken + apiServer), or tokenStorage must be provided',
-      )
+    test('should create a client with no config, relying on storage and the env seed', () => {
+      expect(new QuestradeClient({ tokenStorage: 'memory' })).toBeDefined()
     })
 
     test('should create client with refresh token', () => {
@@ -99,7 +97,7 @@ describe('QuestradeClient', () => {
 
     test('should throw error if access token provided without api server', () => {
       expect(() => new QuestradeClient({ accessToken: 'test_access_token' })).toThrow(
-        'Either refreshToken, (accessToken + apiServer), or tokenStorage must be provided',
+        'accessToken and apiServer must be provided together',
       )
     })
 
@@ -125,6 +123,117 @@ describe('QuestradeClient', () => {
   })
 
   describe('initialize', () => {
+    describe('refresh token precedence', () => {
+      const seedEnvVar = 'QUESTRADE_REFRESH_TOKEN'
+      let originalSeedEnv: string | undefined
+
+      beforeEach(() => {
+        originalSeedEnv = process.env[seedEnvVar]
+        delete process.env[seedEnvVar]
+      })
+
+      afterEach(() => {
+        if (originalSeedEnv === undefined) delete process.env[seedEnvVar]
+        else process.env[seedEnvVar] = originalSeedEnv
+      })
+
+      function mockTokenEndpoint(validTokens: string[]) {
+        const usedTokens: string[] = []
+        AuthClient.prototype.refreshToken = mock(async (token: string) => {
+          usedTokens.push(token)
+          if (!validTokens.includes(token)) throw new AuthenticationError('Bad Request')
+          return { ...mockTokenResponse, refresh_token: `rotated_${token}` }
+        })
+        return usedTokens
+      }
+
+      async function createClientWithStoredToken(storedToken: string | null, seed?: string) {
+        const client = new QuestradeClient({
+          refreshToken: seed,
+          tokenStorage: 'memory',
+          autoRefresh: false,
+        })
+        const storage = (client as unknown as { tokenStorage: { set(t: string): Promise<void> } })
+          .tokenStorage
+        if (storedToken) await storage.set(storedToken)
+        return { client, storage: storage as unknown as { get(): Promise<string | null> } }
+      }
+
+      test('prefers the stored token over a stale seed', async () => {
+        const usedTokens = mockTokenEndpoint(['stored'])
+        const { client, storage } = await createClientWithStoredToken('stored', 'stale_seed')
+
+        await client.initialize()
+
+        expect(usedTokens).toEqual(['stored'])
+        expect(await storage.get()).toBe('rotated_stored')
+      })
+
+      test('falls back to the seed when the stored token is rejected', async () => {
+        const usedTokens = mockTokenEndpoint(['fresh_seed'])
+        const { client, storage } = await createClientWithStoredToken('revoked', 'fresh_seed')
+
+        await client.initialize()
+
+        expect(usedTokens).toEqual(['revoked', 'fresh_seed'])
+        expect(await storage.get()).toBe('rotated_fresh_seed')
+      })
+
+      test('uses the seed when storage is empty', async () => {
+        const usedTokens = mockTokenEndpoint(['seed'])
+        const { client } = await createClientWithStoredToken(null, 'seed')
+
+        await client.initialize()
+
+        expect(usedTokens).toEqual(['seed'])
+      })
+
+      test('reads the seed from QUESTRADE_REFRESH_TOKEN when config has none', async () => {
+        process.env[seedEnvVar] = 'env_seed'
+        const usedTokens = mockTokenEndpoint(['env_seed'])
+        const { client } = await createClientWithStoredToken(null)
+
+        await client.initialize()
+
+        expect(usedTokens).toEqual(['env_seed'])
+      })
+
+      test('tries a token only once when storage and seed hold the same value', async () => {
+        const usedTokens = mockTokenEndpoint([])
+        const { client } = await createClientWithStoredToken('same', 'same')
+
+        await expect(client.initialize()).rejects.toBeInstanceOf(AuthenticationError)
+        expect(usedTokens).toEqual(['same'])
+      })
+
+      test('explains how to recover when every token is rejected', async () => {
+        mockTokenEndpoint([])
+        const { client } = await createClientWithStoredToken('revoked', 'consumed')
+
+        await expect(client.initialize()).rejects.toThrow(
+          'rejected the refresh token from storage and seed',
+        )
+      })
+
+      test('does not try the seed when the stored token fails for a non-auth reason', async () => {
+        const usedTokens: string[] = []
+        AuthClient.prototype.refreshToken = mock(async (token: string) => {
+          usedTokens.push(token)
+          throw new NetworkError('Network request failed')
+        })
+        const { client } = await createClientWithStoredToken('stored', 'seed')
+
+        await expect(client.initialize()).rejects.toBeInstanceOf(NetworkError)
+        expect(usedTokens).toEqual(['stored'])
+      })
+
+      test('explains where to get a token when none is available', async () => {
+        const { client } = await createClientWithStoredToken(null)
+
+        await expect(client.initialize()).rejects.toThrow('kest-trade-sdk login')
+      })
+    })
+
     test('should initialize with refresh token', async () => {
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',

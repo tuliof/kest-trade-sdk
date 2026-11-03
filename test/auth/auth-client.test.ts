@@ -103,6 +103,18 @@ describe('AuthClient', () => {
       }
     })
 
+    test('should throw AuthenticationError on 400 (rejected grant)', async () => {
+      globalThis.fetch = mock(
+        async () => new Response('Bad Request', { status: 400 }),
+      ) as unknown as typeof fetch
+
+      const client = new AuthClient()
+
+      await expect(client.refreshToken('consumed_token')).rejects.toBeInstanceOf(
+        AuthenticationError,
+      )
+    })
+
     test('should throw NetworkError on server error', async () => {
       const mockFetch = mock(async () => {
         return new Response(
