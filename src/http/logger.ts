@@ -48,7 +48,23 @@ export interface HttpLogOptions {
   logRequestBody?: boolean
   logResponseHeaders?: boolean
   logResponseBody?: boolean
+  /**
+   * Additional redaction applied AFTER the built-in redaction (Authorization
+   * header, access_token, refresh_token). It receives an already-redacted
+   * entry and cannot disable the default redaction.
+   */
   redactFn?: (entry: LogEntry) => LogEntry
+}
+
+function redactTokenFields(body: Record<string, unknown>): Record<string, unknown> {
+  const redacted = { ...body }
+  if (typeof redacted.access_token === 'string') {
+    redacted.access_token = redactToken(redacted.access_token)
+  }
+  if (typeof redacted.refresh_token === 'string') {
+    redacted.refresh_token = redactToken(redacted.refresh_token)
+  }
+  return redacted
 }
 
 /**
@@ -75,31 +91,19 @@ export function defaultRedactFn(entry: LogEntry): LogEntry {
   }
 
   if (redacted.requestBody && typeof redacted.requestBody === 'object') {
-    const body = redacted.requestBody as Record<string, unknown>
-    if (typeof body.access_token === 'string') {
-      redacted.requestBody = { ...body, access_token: redactToken(body.access_token) }
-    }
-    if (typeof body.refresh_token === 'string') {
-      redacted.requestBody = { ...body, refresh_token: redactToken(body.refresh_token) }
-    }
+    redacted.requestBody = redactTokenFields(redacted.requestBody as Record<string, unknown>)
   }
 
   if (redacted.responseBody && typeof redacted.responseBody === 'object') {
-    const body = redacted.responseBody as Record<string, unknown>
-    if (typeof body.access_token === 'string') {
-      redacted.responseBody = { ...body, access_token: redactToken(body.access_token) }
-    }
-    if (typeof body.refresh_token === 'string') {
-      redacted.responseBody = { ...body, refresh_token: redactToken(body.refresh_token) }
-    }
+    redacted.responseBody = redactTokenFields(redacted.responseBody as Record<string, unknown>)
   }
 
   return redacted
 }
 
 function applyRedaction(entry: LogEntry, options?: HttpLogOptions): LogEntry {
-  const redactFn = options?.redactFn ?? defaultRedactFn
-  return redactFn(entry)
+  const redacted = defaultRedactFn(entry)
+  return options?.redactFn ? options.redactFn(redacted) : redacted
 }
 
 export function formatRequestEntry(

@@ -78,7 +78,9 @@ Sensitive data is automatically redacted before logging:
 - `access_token` in request/response body → `[REDACTED]...c123`
 - `refresh_token` in request/response body → `[REDACTED]...oken`
 
-To customize redaction, provide a `redactFn`:
+To add your own redaction, provide a `redactFn`. It runs AFTER the built-in
+redaction and receives the already-redacted entry, so it cannot weaken the
+defaults (Authorization, `access_token`, `refresh_token`):
 
 ```typescript
 const client = new QuestradeClient({

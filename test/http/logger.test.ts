@@ -157,6 +157,55 @@ describe('formatRequestEntry', () => {
     expect(entry.requestBody).toBeUndefined()
   })
 
+  test('should redact both access_token and refresh_token in a request body', () => {
+    const entry = formatRequestEntry(
+      'POST',
+      'https://api.example.com/token',
+      undefined,
+      { access_token: 'access-secret-1234', refresh_token: 'refresh-secret-5678', keep: 'me' },
+      { logRequestBody: true },
+    )
+    const body = entry.requestBody as Record<string, unknown>
+    expect(body.access_token).toBe('[REDACTED]...1234')
+    expect(body.refresh_token).toBe('[REDACTED]...5678')
+    expect(body.keep).toBe('me')
+  })
+
+  test('should redact both tokens in a response body', () => {
+    const entry = formatResponseEntry(
+      'POST',
+      'https://api.example.com/token',
+      200,
+      undefined,
+      { access_token: 'access-secret-1234', refresh_token: 'refresh-secret-5678' },
+      5,
+      { logResponseBody: true },
+    )
+    const body = entry.responseBody as Record<string, unknown>
+    expect(body.access_token).toBe('[REDACTED]...1234')
+    expect(body.refresh_token).toBe('[REDACTED]...5678')
+  })
+
+  test('should keep default redaction when a custom redactFn is supplied', () => {
+    let seenAuthorization: string | undefined
+    const entry = formatRequestEntry(
+      'GET',
+      'https://api.example.com/test',
+      { Authorization: 'Bearer super-secret-token' },
+      undefined,
+      {
+        logRequestHeaders: true,
+        redactFn: (received) => {
+          seenAuthorization = received.requestHeaders?.Authorization
+          return received
+        },
+      },
+    )
+    expect(seenAuthorization).toBe('Bearer [REDACTED]...oken')
+    expect(entry.requestHeaders?.Authorization).toBe('Bearer [REDACTED]...oken')
+    expect(JSON.stringify(entry)).not.toContain('super-secret-token')
+  })
+
   test('should support custom redactFn', () => {
     const customRedact = (entry: LogEntry): LogEntry => ({
       ...entry,
