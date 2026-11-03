@@ -210,6 +210,12 @@ describe('EnvTokenStorage', () => {
     expect(await Bun.file(envPath).text()).toBe('OTHER=1\r\nQUESTRADE_REFRESH_TOKEN=new\r\n')
   })
 
+  test('should throw on get when the env path cannot be read', async () => {
+    const directoryStorage = new EnvTokenStorage(tempDir, 'QUESTRADE_REFRESH_TOKEN')
+
+    await expect(directoryStorage.get()).rejects.toThrow('Failed to read token')
+  })
+
   test('should delete token from .env file', async () => {
     await storage.set('my-refresh-token')
     await storage.delete()
@@ -309,6 +315,16 @@ describe('SecureTokenStorage', () => {
     const { backend } = createFakeSecrets()
     const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
     expect(await storage.get()).toBeNull()
+  })
+
+  test('should throw on get when the backend fails instead of reporting not found', async () => {
+    const { backend } = createFakeSecrets()
+    backend.get = async () => {
+      throw new Error('keychain locked')
+    }
+    const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
+
+    await expect(storage.get()).rejects.toThrow('keychain locked')
   })
 
   test('should remove the keychain entry on delete instead of blanking it', async () => {

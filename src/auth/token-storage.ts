@@ -38,7 +38,8 @@ export const TokenStorageType = {
 export interface ITokenStorage {
   /**
    * Retrieve the stored refresh token
-   * @returns The refresh token or null if not found
+   * @returns The refresh token, or null only when none is stored
+   * @throws Error when the backing store cannot be read (permissions, keychain failure)
    */
   get(): Promise<string | null>
 
@@ -248,10 +249,13 @@ export class SecureTokenStorage implements ITokenStorage {
       })
       return token || null
     } catch (error) {
-      this.logger.warn('Failed to retrieve token from secure storage', {
+      this.logger.error('Failed to retrieve token from secure storage', {
         error: error instanceof Error ? error.message : String(error),
       })
-      return null
+      throw new Error(
+        `Failed to read token from secure storage (service "${this.service}", name "${this.name}"): ${error instanceof Error ? error.message : String(error)}. Check that the OS keychain is available and unlocked.`,
+        { cause: error },
+      )
     }
   }
 
@@ -375,10 +379,13 @@ export class EnvTokenStorage implements ITokenStorage {
 
       return parseEnvValue(match?.[1] ?? '') || null
     } catch (error) {
-      this.logger.warn(`Failed to read token from ${this.envPath}`, {
+      this.logger.error(`Failed to read token from ${this.envPath}`, {
         error: error instanceof Error ? error.message : String(error),
       })
-      return null
+      throw new Error(
+        `Failed to read token from ${this.envPath}: ${error instanceof Error ? error.message : String(error)}. Check that the file is readable.`,
+        { cause: error },
+      )
     }
   }
 
