@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
-import { unlink, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { rename, unlink, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 import { type Logger, SilentLogger } from '@/logger'
 
 /**
@@ -320,6 +322,24 @@ export class EnvTokenStorage implements ITokenStorage {
     return this.varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   }
 
+  private variableLinePattern(): RegExp {
+    return new RegExp(`^${this.escapeVarName()}=.*$`, 'm')
+  }
+
+  private async writeFileAtomically(fullPath: string, content: string): Promise<void> {
+    const tempPath = join(
+      dirname(fullPath),
+      `.${basename(fullPath)}.${randomBytes(6).toString('hex')}.tmp`,
+    )
+    try {
+      await writeFile(tempPath, content, { mode: 0o600 })
+      await rename(tempPath, fullPath)
+    } catch (error) {
+      await unlink(tempPath).catch(() => {})
+      throw error
+    }
+  }
+
   async get(): Promise<string | null> {
     try {
       if (typeof process === 'undefined' || !process.cwd) {
@@ -363,23 +383,22 @@ export class EnvTokenStorage implements ITokenStorage {
       const exists = await envFile.exists()
 
       if (!exists) {
-        await writeFile(fullPath, `${this.varName}=${refreshToken}\n`, { mode: 0o600 })
+        await this.writeFileAtomically(fullPath, `${this.varName}=${refreshToken}\n`)
         this.logger.info('Token saved to new file', { path: this.envPath })
         return
       }
 
       const envContent = await envFile.text()
 
-      if (envContent.includes(`${this.varName}=`)) {
-        const updated = envContent.replace(
-          new RegExp(`${this.escapeVarName()}=.*`),
-          `${this.varName}=${refreshToken}`,
-        )
-        await writeFile(fullPath, updated, { mode: 0o600 })
+      const variableLine = this.variableLinePattern()
+
+      if (variableLine.test(envContent)) {
+        const updated = envContent.replace(variableLine, () => `${this.varName}=${refreshToken}`)
+        await this.writeFileAtomically(fullPath, updated)
         this.logger.info('Token refreshed and saved', { path: this.envPath })
       } else {
         const updated = `${envContent.trimEnd()}\n${this.varName}=${refreshToken}\n`
-        await writeFile(fullPath, updated, { mode: 0o600 })
+        await this.writeFileAtomically(fullPath, updated)
         this.logger.info('Token saved', { path: this.envPath })
       }
     } catch (error) {
@@ -416,7 +435,7 @@ export class EnvTokenStorage implements ITokenStorage {
         await unlink(fullPath)
         this.logger.info('File deleted (was only token)', { path: this.envPath })
       } else {
-        await writeFile(fullPath, updated, { mode: 0o600 })
+        await this.writeFileAtomically(fullPath, updated)
         this.logger.info('Token removed from file', { path: this.envPath })
       }
     } catch (error) {

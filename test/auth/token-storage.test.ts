@@ -115,6 +115,45 @@ describe('EnvTokenStorage', () => {
     expect(content).toContain('QUESTRADE_REFRESH_TOKEN=appended-token')
   })
 
+  test('should not touch variables that merely end with the target name', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'OLD_QUESTRADE_REFRESH_TOKEN=keep\nQUESTRADE_REFRESH_TOKEN=abc\n')
+
+    await storage.set('new-token')
+
+    const content = await Bun.file(envPath).text()
+    expect(content).toBe('OLD_QUESTRADE_REFRESH_TOKEN=keep\nQUESTRADE_REFRESH_TOKEN=new-token\n')
+  })
+
+  test('should append when only a suffix-matching variable exists', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'OLD_QUESTRADE_REFRESH_TOKEN=keep\n')
+
+    await storage.set('fresh')
+
+    const content = await Bun.file(envPath).text()
+    expect(content).toBe('OLD_QUESTRADE_REFRESH_TOKEN=keep\nQUESTRADE_REFRESH_TOKEN=fresh\n')
+  })
+
+  test('should store tokens containing replacement patterns literally', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'QUESTRADE_REFRESH_TOKEN=abc\n')
+
+    await storage.set('new$&tok$1$$')
+
+    expect(await storage.get()).toBe('new$&tok$1$$')
+  })
+
+  test('should write the env file with owner-only permissions and leave no temp files', async () => {
+    const { readdir, stat } = await import('node:fs/promises')
+    await storage.set('first')
+    await storage.set('second')
+
+    const mode = (await stat(envPath)).mode & 0o777
+    expect(mode).toBe(0o600)
+    expect(await readdir(tempDir)).toEqual(['.env'])
+  })
+
   test('should delete token from .env file', async () => {
     await storage.set('my-refresh-token')
     await storage.delete()
