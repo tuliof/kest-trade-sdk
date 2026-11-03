@@ -186,6 +186,7 @@ export class QuestradeClient {
   private tokenStorage: ITokenStorage
   private currentToken?: TokenResponse
   private refreshTimerId?: Timer
+  private inFlightRefresh?: Promise<TokenResponse>
 
   constructor(config: QuestradeClientConfig) {
     // Validate configuration
@@ -282,6 +283,8 @@ export class QuestradeClient {
    * - Calling your onTokenRefresh callback (if provided)
    * - Using the new token for subsequent refreshes
    *
+   * Concurrent calls share a single in-flight refresh and resolve to the same result.
+   *
    * @returns The new token response with rotated refresh_token
    * @throws Error if no refresh token is available
    *
@@ -292,7 +295,19 @@ export class QuestradeClient {
    * console.log('New refresh token saved automatically')
    * ```
    */
-  async refreshAccessToken(): Promise<TokenResponse> {
+  refreshAccessToken(): Promise<TokenResponse> {
+    if (this.inFlightRefresh) return this.inFlightRefresh
+
+    // Refresh tokens are single-use: a second concurrent exchange with the
+    // same token would fail, so concurrent callers share one in-flight refresh
+    const refresh = this.performTokenRefresh().finally(() => {
+      this.inFlightRefresh = undefined
+    })
+    this.inFlightRefresh = refresh
+    return refresh
+  }
+
+  private async performTokenRefresh(): Promise<TokenResponse> {
     if (!this.config.refreshToken) {
       throw new Error('Cannot refresh token: no refresh token available')
     }

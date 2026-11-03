@@ -365,6 +365,71 @@ describe('QuestradeClient', () => {
     })
   })
 
+  describe('concurrent refreshes', () => {
+    function createDeferredRefresh() {
+      let release: (token: TokenResponse) => void = () => {}
+      const gate = new Promise<TokenResponse>((resolve) => {
+        release = resolve
+      })
+      const exchange = mock(async () => gate)
+      return { exchange, release }
+    }
+
+    test('should share one token exchange between concurrent callers', async () => {
+      const { exchange, release } = createDeferredRefresh()
+      AuthClient.prototype.refreshToken = exchange
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+      })
+
+      const first = client.refreshAccessToken()
+      const second = client.refreshAccessToken()
+      release(mockTokenResponse)
+
+      expect(await first).toEqual(mockTokenResponse)
+      expect(await second).toEqual(mockTokenResponse)
+      expect(exchange).toHaveBeenCalledTimes(1)
+    })
+
+    test('should allow a new refresh once the previous one settled', async () => {
+      const exchange = mock(async () => mockTokenResponse)
+      AuthClient.prototype.refreshToken = exchange
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+      })
+
+      await client.refreshAccessToken()
+      await client.refreshAccessToken()
+
+      expect(exchange).toHaveBeenCalledTimes(2)
+    })
+
+    test('should clear the in-flight refresh after a failure', async () => {
+      let calls = 0
+      AuthClient.prototype.refreshToken = mock(async () => {
+        calls++
+        if (calls === 1) throw new Error('boom')
+        return mockTokenResponse
+      })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+      })
+
+      const failing = client.refreshAccessToken()
+      const sharing = client.refreshAccessToken()
+      await expect(failing).rejects.toThrow('boom')
+      await expect(sharing).rejects.toThrow('boom')
+
+      expect(await client.refreshAccessToken()).toEqual(mockTokenResponse)
+    })
+  })
+
   describe('automatic token refresh', () => {
     test('should schedule token refresh when autoRefresh is enabled', async () => {
       const client = new QuestradeClient({
