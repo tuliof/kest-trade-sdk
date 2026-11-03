@@ -9,7 +9,7 @@ export const TokenResponseSchema = z.object({
   refresh_token: z.string().min(1),
   token_type: z.literal('Bearer'),
   expires_in: z.number().positive(),
-  api_server: z.string().url(),
+  api_server: z.url(),
 })
 
 /**
