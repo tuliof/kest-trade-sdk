@@ -61,7 +61,53 @@ export class ConsoleLogger implements Logger {
 
   private format(level: string, message: string, context?: LogContext): string {
     if (!context || Object.keys(context).length === 0) return `[${level}] ${message}`
-    return `[${level}] ${message} ${JSON.stringify(context)}`
+    return `[${level}] ${message} ${serializeContext(context)}`
+  }
+}
+
+function toSerializable(value: unknown, ancestors: readonly object[]): unknown {
+  if (typeof value === 'bigint') return value.toString()
+  if (typeof value === 'function' || typeof value === 'symbol') return String(value)
+  if (value === null || typeof value !== 'object') return value
+  if (ancestors.includes(value)) return '[Circular]'
+
+  const lineage = [...ancestors, value]
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString()
+  }
+
+  if (Array.isArray(value)) return value.map((item) => toSerializable(item, lineage))
+
+  const entries = Object.entries(value).map(
+    ([key, entryValue]) => [key, toSerializable(entryValue, lineage)] as const,
+  )
+
+  if (value instanceof Error) {
+    const serialized: Record<string, unknown> = {
+      name: value.name,
+      message: value.message,
+      ...Object.fromEntries(entries),
+    }
+    if (value.cause !== undefined) serialized.cause = toSerializable(value.cause, lineage)
+    return serialized
+  }
+
+  return Object.fromEntries(entries)
+}
+
+/**
+ * Serialize a log context to JSON without ever throwing. Errors keep their
+ * name, message, own properties and cause; BigInt and circular references
+ * are rendered as strings.
+ */
+export function serializeContext(context: LogContext): string {
+  try {
+    return JSON.stringify(toSerializable(context, []))
+  } catch (error) {
+    return JSON.stringify({
+      serializationError: error instanceof Error ? error.message : String(error),
+    })
   }
 }
 
