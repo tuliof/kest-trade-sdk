@@ -10,6 +10,9 @@
     "name": "Tulio Fernandes",
     "email": "kest-trade-sdk@tulio.ca"
   },
+  "bin": {
+    "kest-trade-sdk": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -22,7 +25,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target node --format esm --packages external && tsc --project tsconfig.build.json",
+    "build": "bun build src/index.ts --outdir dist --target node --format esm --packages external && bun run build:cli && tsc --project tsconfig.build.json",
+    "build:cli": "bun build src/cli/main.ts --outfile dist/cli.js --target node --format esm --packages external --banner '#!/usr/bin/env node'",
     "dev": "bun run src/index.ts",
     "test": "bun test",
     "test:unit": "bun test --path-ignore-patterns '**/*.integration.test.ts'",

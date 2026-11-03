@@ -73,6 +73,10 @@ Pick whichever fits your environment. They all end with the token in the default
   the stored token is rejected. Leaving it set after it was consumed is harmless.
 - **`refreshToken` in config**: same seed semantics, for tokens coming from your own code.
 
+The CLI also reads the token from stdin (`echo "$TOKEN" | npx kest-trade-sdk login`) and has
+`status` (where the token is stored, without printing it) and `logout`. Pass
+`--storage auto|secure|file|env` to match a non-default `tokenStorage` in your application.
+
 ## Token storage
 
 The default `'auto'` storage uses the OS keychain (macOS Keychain, Windows Credential
