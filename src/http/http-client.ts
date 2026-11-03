@@ -8,6 +8,12 @@ import {
   getResponseLogLevel,
   type HttpLogOptions,
 } from './logger'
+import {
+  assertValidRequestTimeout,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  describeTimeout,
+  isTimeoutError,
+} from './request-timeout'
 
 const MAX_ERROR_MESSAGE_LENGTH = 200
 
@@ -49,6 +55,7 @@ export class HttpClient {
   private accessToken: string
   private logger: Logger
   private logOptions: HttpLogOptions
+  private readonly requestTimeoutMs: number
 
   /**
    * Create a new HTTP client
@@ -56,17 +63,20 @@ export class HttpClient {
    * @param accessToken - The Bearer access token
    * @param logger - Logger for request/response/error logging (default: silent)
    * @param logOptions - HTTP-specific log formatting options
+   * @param requestTimeoutMs - Abort a request and throw NetworkError after this many ms (default: 30000)
    */
   constructor(
     apiServer: string,
     accessToken: string,
     logger: Logger = new SilentLogger(),
     logOptions: HttpLogOptions = {},
+    requestTimeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
   ) {
     this.apiServer = apiServer.endsWith('/') ? apiServer.slice(0, -1) : apiServer
     this.accessToken = accessToken
     this.logger = logger
     this.logOptions = logOptions
+    this.requestTimeoutMs = assertValidRequestTimeout(requestTimeoutMs)
   }
 
   /**
@@ -168,6 +178,7 @@ export class HttpClient {
       const response = await fetch(url, {
         ...options,
         headers: requestHeaders,
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
       })
 
       const responseHeaders: Record<string, string> = {}
@@ -215,10 +226,14 @@ export class HttpClient {
         throw error
       }
 
-      // Wrap other errors in NetworkError
-      const networkError = new NetworkError('Network request failed', undefined, undefined, {
-        cause: error,
-      })
+      const networkError = new NetworkError(
+        isTimeoutError(error)
+          ? describeTimeout(url, this.requestTimeoutMs)
+          : 'Network request failed',
+        undefined,
+        undefined,
+        { cause: error },
+      )
       this.logger.error(
         'HTTP Error',
         formatErrorEntry(method, url, networkError, duration, this.logOptions),

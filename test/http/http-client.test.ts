@@ -452,6 +452,52 @@ describe('HttpClient', () => {
     })
   })
 
+  describe('Timeouts', () => {
+    function mockHangingFetch() {
+      globalThis.fetch = mock(
+        (_url: string, options?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(options.signal?.reason))
+          }),
+      ) as unknown as typeof fetch
+    }
+
+    test('should abort a hanging request with a descriptive NetworkError', async () => {
+      mockHangingFetch()
+      const timeoutClient = new HttpClient(mockApiServer, mockAccessToken, undefined, {}, 20)
+
+      try {
+        await timeoutClient.get('/v1/accounts')
+        expect.unreachable('Should have thrown')
+      } catch (error) {
+        expect(error).toBeInstanceOf(NetworkError)
+        expect((error as NetworkError).message).toContain('timed out after 20ms')
+        expect((error as NetworkError).message).toContain('/v1/accounts')
+      }
+    })
+
+    test('should pass an abort signal to fetch by default', async () => {
+      let receivedSignal: AbortSignal | null | undefined
+      globalThis.fetch = mock(async (_url: string, options?: RequestInit) => {
+        receivedSignal = options?.signal
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }) as unknown as typeof fetch
+
+      await client.get('/v1/accounts')
+
+      expect(receivedSignal).toBeInstanceOf(AbortSignal)
+    })
+
+    test('should reject non-positive or non-finite timeouts at construction', () => {
+      expect(() => new HttpClient(mockApiServer, mockAccessToken, undefined, {}, 0)).toThrow(
+        'requestTimeoutMs',
+      )
+      expect(
+        () => new HttpClient(mockApiServer, mockAccessToken, undefined, {}, Number.NaN),
+      ).toThrow('requestTimeoutMs')
+    })
+  })
+
   describe('Token Management', () => {
     test('should allow updating access token', async () => {
       const newToken = 'new_token_456'

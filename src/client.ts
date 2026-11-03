@@ -10,6 +10,7 @@ import {
 } from '@/auth/token-storage'
 import { HttpClient } from '@/http/http-client'
 import type { HttpLogOptions } from '@/http/logger'
+import { assertValidRequestTimeout, DEFAULT_REQUEST_TIMEOUT_MS } from '@/http/request-timeout'
 import { createLogger, type Logger, type LogLevel, SilentLogger } from '@/logger'
 import { MarketClient } from '@/market/market-client'
 import type { TokenResponse } from '@/types/auth'
@@ -134,6 +135,13 @@ export interface QuestradeClientConfig {
    * Only relevant when logger is enabled.
    */
   httpLogOptions?: HttpLogOptions
+
+  /**
+   * Per-request timeout in milliseconds for API and token requests.
+   * A timed-out request rejects with a NetworkError.
+   * @default 30000
+   */
+  requestTimeoutMs?: number
 }
 
 /**
@@ -172,6 +180,7 @@ export class QuestradeClient {
     refreshBuffer: number
     tokenStorage: TokenStorageConfig
     httpLogOptions: HttpLogOptions
+    requestTimeoutMs: number
     onTokenRefresh?: (tokenResponse: TokenResponse) => void | Promise<void>
   }
   private tokenStorage: ITokenStorage
@@ -211,13 +220,16 @@ export class QuestradeClient {
         logResponseBody: true,
         ...config.httpLogOptions,
       },
+      requestTimeoutMs: assertValidRequestTimeout(
+        config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+      ),
       onTokenRefresh: config.onTokenRefresh,
     }
 
     // Create token storage instance
     this.tokenStorage = createTokenStorage(this.config.tokenStorage, this.logger)
 
-    this.authClient = new AuthClient()
+    this.authClient = new AuthClient(this.config.requestTimeoutMs)
   }
 
   /**
@@ -235,6 +247,7 @@ export class QuestradeClient {
         this.config.accessToken,
         this.logger,
         this.config.httpLogOptions,
+        this.config.requestTimeoutMs,
       )
       this.initializeClients()
       return
@@ -304,6 +317,7 @@ export class QuestradeClient {
       tokenResponse.access_token,
       this.logger,
       this.config.httpLogOptions,
+      this.config.requestTimeoutMs,
     )
     this.initializeClients()
 

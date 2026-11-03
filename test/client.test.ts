@@ -52,6 +52,34 @@ describe('QuestradeClient', () => {
       expect(client).toBeDefined()
     })
 
+    test('should reject an invalid requestTimeoutMs', () => {
+      expect(
+        () =>
+          new QuestradeClient({ refreshToken: 'x', tokenStorage: 'memory', requestTimeoutMs: 0 }),
+      ).toThrow('requestTimeoutMs')
+    })
+
+    test('should attach a timeout signal to the token request', async () => {
+      const signals: Array<AbortSignal | null | undefined> = []
+      globalThis.fetch = mock(async (_url: string, options?: RequestInit) => {
+        signals.push(options?.signal)
+        return new Response(JSON.stringify(mockTokenResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as unknown as typeof fetch
+      const client = new QuestradeClient({
+        refreshToken: 'x',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+        requestTimeoutMs: 5000,
+      })
+
+      await client.initialize()
+
+      expect(signals[0]).toBeInstanceOf(AbortSignal)
+    })
+
     test('should create client with access token and api server', () => {
       const client = new QuestradeClient({
         accessToken: 'test_access_token',

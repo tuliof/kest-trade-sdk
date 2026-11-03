@@ -12,6 +12,30 @@ describe('AuthClient', () => {
     })
   })
 
+  describe('Timeouts', () => {
+    test('should abort a hanging token request with a descriptive NetworkError', async () => {
+      globalThis.fetch = mock(
+        (_url: string, options?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(options.signal?.reason))
+          }),
+      ) as unknown as typeof fetch
+      const client = new AuthClient(20)
+
+      try {
+        await client.refreshToken('some_token')
+        expect.unreachable('Should have thrown')
+      } catch (error) {
+        expect(error).toBeInstanceOf(NetworkError)
+        expect((error as NetworkError).message).toContain('timed out after 20ms')
+      }
+    })
+
+    test('should reject invalid timeouts at construction', () => {
+      expect(() => new AuthClient(-1)).toThrow('requestTimeoutMs')
+    })
+  })
+
   describe('refreshToken', () => {
     test('should successfully exchange refresh token for access token', async () => {
       const mockResponse: TokenResponse = {

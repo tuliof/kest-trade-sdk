@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
+import {
+  assertValidRequestTimeout,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  describeTimeout,
+  isTimeoutError,
+} from '@/http/request-timeout'
 import { type TokenResponse, TokenResponseSchema } from '@/types/auth'
 import { AuthenticationError, NetworkError, ValidationError } from '@/types/errors'
 
@@ -11,6 +17,14 @@ export class AuthClient {
 
   private tokenExpiresAt?: Date
   private currentToken?: TokenResponse
+  private readonly requestTimeoutMs: number
+
+  /**
+   * @param requestTimeoutMs - Abort the token request and throw NetworkError after this many ms (default: 30000)
+   */
+  constructor(requestTimeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS) {
+    this.requestTimeoutMs = assertValidRequestTimeout(requestTimeoutMs)
+  }
 
   /**
    * Refresh an access token using a refresh token
@@ -32,6 +46,7 @@ export class AuthClient {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: body.toString(),
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
       })
 
       // Handle error responses
@@ -65,6 +80,15 @@ export class AuthClient {
         error instanceof ValidationError
       ) {
         throw error
+      }
+
+      if (isTimeoutError(error)) {
+        throw new NetworkError(
+          describeTimeout(AuthClient.TOKEN_ENDPOINT, this.requestTimeoutMs),
+          undefined,
+          undefined,
+          { cause: error },
+        )
       }
 
       // Wrap unexpected errors
