@@ -10,6 +10,7 @@ import {
   type ITokenStorage,
   type MemoryStorageConfig,
   MemoryTokenStorage,
+  parseEnvValue,
   resolveSecretsBackend,
   type SecretsBackend,
   type SecureStorageConfig,
@@ -182,6 +183,31 @@ describe('EnvTokenStorage', () => {
     } finally {
       bunRuntime.file = originalFile
     }
+  })
+
+  test('should strip surrounding double quotes from the stored value', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'QUESTRADE_REFRESH_TOKEN="quoted-token"\n')
+    expect(await storage.get()).toBe('quoted-token')
+  })
+
+  test('should strip surrounding single quotes from the stored value', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, "QUESTRADE_REFRESH_TOKEN='quoted-token'\n")
+    expect(await storage.get()).toBe('quoted-token')
+  })
+
+  test('should read values from CRLF files without a trailing carriage return', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'OTHER=1\r\nQUESTRADE_REFRESH_TOKEN=crlf-token\r\n')
+    expect(await storage.get()).toBe('crlf-token')
+  })
+
+  test('should preserve CRLF line endings when updating the token', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'OTHER=1\r\nQUESTRADE_REFRESH_TOKEN=old\r\n')
+    await storage.set('new')
+    expect(await Bun.file(envPath).text()).toBe('OTHER=1\r\nQUESTRADE_REFRESH_TOKEN=new\r\n')
   })
 
   test('should delete token from .env file', async () => {
@@ -437,4 +463,20 @@ describe('ITokenStorage interface compliance', () => {
       expect(await storage.get()).toBeNull()
     })
   }
+})
+
+describe('parseEnvValue', () => {
+  test('should leave unquoted values untouched', () => {
+    expect(parseEnvValue('abc')).toBe('abc')
+  })
+
+  test('should not strip mismatched or lone quotes', () => {
+    expect(parseEnvValue('"abc')).toBe('"abc')
+    expect(parseEnvValue('"abc\'')).toBe('"abc\'')
+    expect(parseEnvValue('"')).toBe('"')
+  })
+
+  test('should strip a trailing carriage return before unquoting', () => {
+    expect(parseEnvValue('"abc"\r')).toBe('abc')
+  })
 })

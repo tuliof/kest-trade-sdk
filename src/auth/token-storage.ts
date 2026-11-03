@@ -300,6 +300,19 @@ export class SecureTokenStorage implements ITokenStorage {
 }
 
 /**
+ * Normalize a raw .env value: drop a trailing carriage return (CRLF files)
+ * and one pair of matching surrounding quotes.
+ */
+export function parseEnvValue(rawValue: string): string {
+  const value = rawValue.replace(/\r$/, '')
+  const isQuoted =
+    value.length >= 2 &&
+    (value.startsWith('"') || value.startsWith("'")) &&
+    value.endsWith(value[0] as string)
+  return isQuoted ? value.slice(1, -1) : value
+}
+
+/**
  * Token storage using .env file
  * Maintains backward compatibility with existing implementation
  */
@@ -360,7 +373,7 @@ export class EnvTokenStorage implements ITokenStorage {
 
       const match = content.match(new RegExp(`^${this.escapeVarName()}=(.*)$`, 'm'))
 
-      return match?.[1] || null
+      return parseEnvValue(match?.[1] ?? '') || null
     } catch (error) {
       this.logger.warn(`Failed to read token from ${this.envPath}`, {
         error: error instanceof Error ? error.message : String(error),
