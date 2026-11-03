@@ -329,6 +329,42 @@ describe('QuestradeClient', () => {
     })
   })
 
+  describe('setHttpLogOptions', () => {
+    test('should apply new log options to requests without waiting for a refresh', async () => {
+      AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
+      const entries: Array<Record<string, unknown> | undefined> = []
+      const logger = {
+        debug: (_message: string, context?: Record<string, unknown>) => {
+          entries.push(context)
+        },
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+      }
+      globalThis.fetch = mock(
+        async () =>
+          new Response(JSON.stringify({ accounts: [], userId: 1 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      ) as unknown as typeof fetch
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+        logger,
+      })
+      await client.initialize()
+
+      client.setHttpLogOptions({ logRequestHeaders: false, logResponseBody: false })
+      await client.accounts.getAccounts()
+
+      const requestEntry = entries.find((entry) => entry?.method === 'GET')
+      expect(requestEntry?.requestHeaders).toBeUndefined()
+      expect(entries.some((entry) => entry?.responseBody !== undefined)).toBe(false)
+    })
+  })
+
   describe('automatic token refresh', () => {
     test('should schedule token refresh when autoRefresh is enabled', async () => {
       const client = new QuestradeClient({

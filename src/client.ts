@@ -447,6 +447,7 @@ export class QuestradeClient {
    */
   public setHttpLogOptions(options: HttpLogOptions): void {
     this.config.httpLogOptions = options
+    this.httpClient?.setLogOptions(options)
   }
 
   /**

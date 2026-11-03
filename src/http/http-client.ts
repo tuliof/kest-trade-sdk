@@ -111,6 +111,14 @@ export class HttpClient {
   }
 
   /**
+   * Update HTTP log formatting options; applies to subsequent requests
+   * @param logOptions - New HTTP log options
+   */
+  public setLogOptions(logOptions: HttpLogOptions): void {
+    this.logOptions = logOptions
+  }
+
+  /**
    * Make a GET request
    * @param path - API endpoint path (e.g., "/v1/accounts")
    * @param params - Optional query parameters
