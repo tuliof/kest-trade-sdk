@@ -7,6 +7,13 @@ import { MarketClient } from '@/market/market-client'
 import type { TokenResponse } from '@/types/auth'
 import { AuthenticationError, NetworkError } from '@/types/errors'
 
+const pristineAuthClientMethods = {
+  refreshToken: AuthClient.prototype.refreshToken,
+  getTokenExpiresAt: AuthClient.prototype.getTokenExpiresAt,
+  isTokenExpired: AuthClient.prototype.isTokenExpired,
+  isTokenExpiringSoon: AuthClient.prototype.isTokenExpiringSoon,
+}
+
 describe('QuestradeClient', () => {
   let mockTokenResponse: TokenResponse
   let originalFetch: typeof globalThis.fetch
@@ -35,6 +42,7 @@ describe('QuestradeClient', () => {
   afterEach(() => {
     // Restore original fetch
     globalThis.fetch = originalFetch
+    Object.assign(AuthClient.prototype, pristineAuthClientMethods)
     mock.restore()
   })
 
