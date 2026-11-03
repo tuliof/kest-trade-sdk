@@ -5,6 +5,7 @@ import { AuthClient } from '@/auth/auth-client'
 import { QuestradeClient } from '@/client'
 import { MarketClient } from '@/market/market-client'
 import type { TokenResponse } from '@/types/auth'
+import { AuthenticationError, NetworkError } from '@/types/errors'
 
 describe('QuestradeClient', () => {
   let mockTokenResponse: TokenResponse
@@ -480,6 +481,140 @@ describe('QuestradeClient', () => {
       await client.initialize()
 
       expect(mockRefreshToken).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('auto-refresh failure handling', () => {
+    const originalRefreshToken = AuthClient.prototype.refreshToken
+    const originalGetTokenExpiresAt = AuthClient.prototype.getTokenExpiresAt
+
+    afterEach(() => {
+      AuthClient.prototype.refreshToken = originalRefreshToken
+      AuthClient.prototype.getTokenExpiresAt = originalGetTokenExpiresAt
+    })
+
+    async function waitFor(condition: () => boolean): Promise<void> {
+      const deadline = Date.now() + 2000
+      while (!condition()) {
+        if (Date.now() > deadline) throw new Error('Timed out waiting for condition')
+        await new Promise((resolve) => setTimeout(resolve, 2))
+      }
+    }
+
+    function expireSoonOnlyOnce() {
+      let reported = false
+      AuthClient.prototype.getTokenExpiresAt = mock(() => {
+        if (reported) return undefined
+        reported = true
+        return new Date(Date.now() + 15)
+      })
+    }
+
+    function createAutoRefreshClient(
+      onAutoRefreshError?: (error: unknown, attempts: number) => void,
+    ) {
+      return new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        refreshBuffer: 0,
+        autoRefreshRetryDelayMs: 2,
+        onAutoRefreshError,
+      })
+    }
+
+    test('should retry a failed auto-refresh and recover without notifying', async () => {
+      expireSoonOnlyOnce()
+      let calls = 0
+      AuthClient.prototype.refreshToken = mock(async () => {
+        calls++
+        if (calls === 2) throw new NetworkError('flaky', 503)
+        return mockTokenResponse
+      })
+      const onAutoRefreshError = mock(() => {})
+      const client = createAutoRefreshClient(onAutoRefreshError)
+
+      await client.initialize()
+      await waitFor(() => calls >= 3)
+
+      expect(onAutoRefreshError).not.toHaveBeenCalled()
+      client.dispose()
+    })
+
+    test('should give up after 3 attempts and call onAutoRefreshError', async () => {
+      expireSoonOnlyOnce()
+      let calls = 0
+      const failure = new NetworkError('down', 503)
+      AuthClient.prototype.refreshToken = mock(async () => {
+        calls++
+        if (calls > 1) throw failure
+        return mockTokenResponse
+      })
+      const notifications: Array<{ error: unknown; attempts: number }> = []
+      const client = createAutoRefreshClient((error, attempts) => {
+        notifications.push({ error, attempts })
+      })
+
+      await client.initialize()
+      await waitFor(() => notifications.length > 0)
+
+      expect(calls).toBe(4)
+      expect(notifications).toEqual([{ error: failure, attempts: 3 }])
+      client.dispose()
+    })
+
+    test('should not retry a rejected refresh token', async () => {
+      expireSoonOnlyOnce()
+      let calls = 0
+      AuthClient.prototype.refreshToken = mock(async () => {
+        calls++
+        if (calls > 1) throw new AuthenticationError('invalid_grant')
+        return mockTokenResponse
+      })
+      const notifications: number[] = []
+      const client = createAutoRefreshClient((_error, attempts) => {
+        notifications.push(attempts)
+      })
+
+      await client.initialize()
+      await waitFor(() => notifications.length > 0)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+
+      expect(calls).toBe(2)
+      expect(notifications).toEqual([1])
+      client.dispose()
+    })
+
+    test('should survive an onAutoRefreshError callback that throws', async () => {
+      expireSoonOnlyOnce()
+      let calls = 0
+      AuthClient.prototype.refreshToken = mock(async () => {
+        calls++
+        if (calls > 1) throw new AuthenticationError('invalid_grant')
+        return mockTokenResponse
+      })
+      let invoked = false
+      const client = createAutoRefreshClient(() => {
+        invoked = true
+        throw new Error('callback failed')
+      })
+
+      await client.initialize()
+      await waitFor(() => invoked)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      client.dispose()
+    })
+
+    test('should not keep the process alive with the refresh timer', async () => {
+      AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
+      AuthClient.prototype.getTokenExpiresAt = mock(() => new Date(Date.now() + 3_600_000))
+      const client = createAutoRefreshClient()
+
+      await client.initialize()
+
+      const timer = (client as unknown as { refreshTimerId?: { hasRef(): boolean } }).refreshTimerId
+      expect(timer?.hasRef()).toBe(false)
+      client.dispose()
     })
   })
 

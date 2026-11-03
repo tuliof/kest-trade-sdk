@@ -14,6 +14,18 @@ import { assertValidRequestTimeout, DEFAULT_REQUEST_TIMEOUT_MS } from '@/http/re
 import { createLogger, type Logger, type LogLevel, SilentLogger } from '@/logger'
 import { MarketClient } from '@/market/market-client'
 import type { TokenResponse } from '@/types/auth'
+import { AuthenticationError } from '@/types/errors'
+
+const AUTO_REFRESH_MAX_ATTEMPTS = 3
+const DEFAULT_AUTO_REFRESH_RETRY_DELAY_MS = 1000
+
+/**
+ * A rejected refresh token or a storage failure will not be fixed by trying
+ * again (the token has already been rotated in the storage case).
+ */
+function isRetryableRefreshError(error: unknown): boolean {
+  return !(error instanceof AuthenticationError || error instanceof TokenStorageError)
+}
 
 /**
  * Configuration options for QuestradeClient
@@ -72,6 +84,23 @@ export interface QuestradeClientConfig {
    * When enabled, tokens will be refreshed automatically when they're about to expire
    */
   autoRefresh?: boolean
+
+  /**
+   * Base delay in milliseconds between auto-refresh retries (default: 1000).
+   * A failed auto-refresh is attempted up to 3 times in total, doubling the
+   * delay after each failure. Rejected tokens and storage failures are not retried.
+   */
+  autoRefreshRetryDelayMs?: number
+
+  /**
+   * Called when auto-refresh gives up (retries exhausted, token rejected, or
+   * the rotated token could not be stored). Without it, failures are only logged.
+   * Errors thrown by the callback are logged and swallowed.
+   *
+   * @param error - The last error
+   * @param attempts - Number of refresh attempts made
+   */
+  onAutoRefreshError?: (error: unknown, attempts: number) => void | Promise<void>
 
   /**
    * Time in seconds before expiry to trigger auto-refresh (default: 60)
@@ -181,6 +210,8 @@ export class QuestradeClient {
     tokenStorage: TokenStorageConfig
     httpLogOptions: HttpLogOptions
     requestTimeoutMs: number
+    autoRefreshRetryDelayMs: number
+    onAutoRefreshError?: (error: unknown, attempts: number) => void | Promise<void>
     onTokenRefresh?: (tokenResponse: TokenResponse) => void | Promise<void>
   }
   private tokenStorage: ITokenStorage
@@ -224,6 +255,9 @@ export class QuestradeClient {
       requestTimeoutMs: assertValidRequestTimeout(
         config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
       ),
+      autoRefreshRetryDelayMs:
+        config.autoRefreshRetryDelayMs ?? DEFAULT_AUTO_REFRESH_RETRY_DELAY_MS,
+      onAutoRefreshError: config.onAutoRefreshError,
       onTokenRefresh: config.onTokenRefresh,
     }
 
@@ -360,35 +394,64 @@ export class QuestradeClient {
    * Schedule automatic token refresh before expiry
    */
   private scheduleTokenRefresh(): void {
-    // Clear existing timer
-    if (this.refreshTimerId) {
-      clearTimeout(this.refreshTimerId)
-    }
-
-    if (!this.authClient.getTokenExpiresAt()) {
-      return
-    }
+    this.clearRefreshTimer()
 
     const expiresAt = this.authClient.getTokenExpiresAt()
-    if (!expiresAt) {
+    if (!expiresAt) return
+
+    const delay = expiresAt.getTime() - this.config.refreshBuffer * 1000 - Date.now()
+    if (delay <= 0) return
+
+    this.startRefreshTimer(delay, 1)
+  }
+
+  private startRefreshTimer(delayMs: number, attempt: number): void {
+    const timer = setTimeout(() => {
+      void this.attemptAutoRefresh(attempt)
+    }, delayMs)
+    // Auto-refresh must not keep the process alive on its own
+    timer.unref?.()
+    this.refreshTimerId = timer
+  }
+
+  private clearRefreshTimer(): void {
+    if (!this.refreshTimerId) return
+    clearTimeout(this.refreshTimerId)
+    this.refreshTimerId = undefined
+  }
+
+  private async attemptAutoRefresh(attempt: number): Promise<void> {
+    try {
+      await this.refreshAccessToken()
       return
+    } catch (error) {
+      const canRetry = attempt < AUTO_REFRESH_MAX_ATTEMPTS && isRetryableRefreshError(error)
+      this.logger.error('Auto-refresh failed', {
+        attempt,
+        willRetry: canRetry,
+        error: error instanceof Error ? error.message : String(error),
+      })
+
+      if (canRetry) {
+        this.startRefreshTimer(
+          this.config.autoRefreshRetryDelayMs * 2 ** (attempt - 1),
+          attempt + 1,
+        )
+        return
+      }
+
+      await this.notifyAutoRefreshFailure(error, attempt)
     }
+  }
 
-    const now = Date.now()
-    const expiryTime = expiresAt.getTime()
-    const refreshTime = expiryTime - this.config.refreshBuffer * 1000
-    const delay = refreshTime - now
-
-    if (delay > 0) {
-      this.refreshTimerId = setTimeout(async () => {
-        try {
-          await this.refreshAccessToken()
-        } catch (error) {
-          this.logger.error('Auto-refresh failed', {
-            error: error instanceof Error ? error.message : String(error),
-          })
-        }
-      }, delay)
+  private async notifyAutoRefreshFailure(error: unknown, attempts: number): Promise<void> {
+    if (!this.config.onAutoRefreshError) return
+    try {
+      await this.config.onAutoRefreshError(error, attempts)
+    } catch (callbackError) {
+      this.logger.error('onAutoRefreshError callback threw', {
+        error: callbackError instanceof Error ? callbackError.message : String(callbackError),
+      })
     }
   }
 
@@ -490,9 +553,6 @@ export class QuestradeClient {
    * Cleanup resources (timers, etc.)
    */
   dispose(): void {
-    if (this.refreshTimerId) {
-      clearTimeout(this.refreshTimerId)
-      this.refreshTimerId = undefined
-    }
+    this.clearRefreshTimer()
   }
 }
