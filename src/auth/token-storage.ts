@@ -174,42 +174,70 @@ export function createTokenStorage(
 }
 
 /**
+ * Minimal contract of the Bun.secrets API used by SecureTokenStorage.
+ * Declared locally so the published typings do not depend on Bun's globals.
+ */
+export interface SecretsBackend {
+  get(options: { service: string; name: string }): Promise<string | null>
+  set(options: { service: string; name: string; value: string }): Promise<void>
+  delete(options: { service: string; name: string }): Promise<boolean>
+}
+
+/**
+ * Resolve the secrets backend from a Bun runtime object.
+ * @throws Error if the runtime is not Bun or does not expose Bun.secrets
+ */
+export function resolveSecretsBackend(
+  bunRuntime: { secrets?: SecretsBackend } | undefined,
+): SecretsBackend {
+  const secrets = bunRuntime?.secrets
+  if (!secrets) {
+    throw new Error(
+      'SecureTokenStorage requires the Bun runtime (Bun.secrets). Run under Bun >= 1.3 or use tokenStorage "env" or "memory" instead.',
+    )
+  }
+  return secrets
+}
+
+/**
  * Secure token storage using Bun.secrets
  * Stores tokens in OS-native credential storage:
  * - macOS: Keychain
  * - Windows: Credential Manager
  * - Linux: Secret Service API
+ *
+ * Requires the Bun runtime; every operation throws a descriptive error otherwise.
  */
 export class SecureTokenStorage implements ITokenStorage {
   private readonly service: string
   private readonly name: string
   private readonly logger: Logger
+  private readonly injectedSecrets?: SecretsBackend
 
+  /**
+   * @param secrets - Secrets backend override (defaults to Bun.secrets); mainly for tests
+   */
   constructor(
     name: string = 'refresh-token',
     service: string = 'kest-trade-sdk',
     logger: Logger = new SilentLogger(),
+    secrets?: SecretsBackend,
   ) {
     this.name = name
     this.service = service
     this.logger = logger
+    this.injectedSecrets = secrets
   }
 
-  private get secrets() {
-    return (globalThis as Record<string, unknown>).secrets
+  private get secrets(): SecretsBackend {
+    return (
+      this.injectedSecrets ??
+      resolveSecretsBackend((globalThis as { Bun?: { secrets?: SecretsBackend } }).Bun)
+    )
   }
 
   async get(): Promise<string | null> {
-    const secrets = this.secrets as
-      | {
-          get: (opts: { service: string; name: string }) => Promise<string | null>
-        }
-      | undefined
-
-    if (!secrets?.get) {
-      this.logger.warn('Bun.secrets not available in this environment')
-      return null
-    }
+    const secrets = this.secrets
 
     try {
       const token = await secrets.get({
@@ -226,14 +254,15 @@ export class SecureTokenStorage implements ITokenStorage {
   }
 
   async set(refreshToken: string): Promise<void> {
-    const secrets = this.secrets as
-      | {
-          set: (opts: { service: string; name: string; value: string }) => Promise<void>
-        }
-      | undefined
-
-    if (!secrets?.set) {
-      throw new TokenStorageError('Bun.secrets is not available in this environment', refreshToken)
+    let secrets: SecretsBackend
+    try {
+      secrets = this.secrets
+    } catch (error) {
+      throw new TokenStorageError(
+        error instanceof Error ? error.message : String(error),
+        refreshToken,
+        { cause: error },
+      )
     }
 
     try {
@@ -251,23 +280,12 @@ export class SecureTokenStorage implements ITokenStorage {
   }
 
   async delete(): Promise<void> {
-    const secrets = this.secrets as
-      | {
-          set: (opts: { service: string; name: string; value: string }) => Promise<void>
-        }
-      | undefined
+    const secrets = this.secrets
 
-    if (!secrets?.set) {
-      throw new Error('Bun.secrets is not available')
-    }
-
-    // TODO: Replace with Bun.secrets.delete when available
-    // Currently sets value to empty string as workaround (entry persists in keychain)
     try {
-      await secrets.set({
+      await secrets.delete({
         service: this.service,
         name: this.name,
-        value: '',
       })
       this.logger.info('Token deleted from secure storage')
     } catch (error) {

@@ -17,6 +17,8 @@ export {
   type ITokenStorage,
   type MemoryStorageConfig,
   MemoryTokenStorage,
+  resolveSecretsBackend,
+  type SecretsBackend,
   type SecureStorageConfig,
   SecureTokenStorage,
   type StorageConfig,

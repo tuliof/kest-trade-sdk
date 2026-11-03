@@ -10,6 +10,8 @@ import {
   type ITokenStorage,
   type MemoryStorageConfig,
   MemoryTokenStorage,
+  resolveSecretsBackend,
+  type SecretsBackend,
   type SecureStorageConfig,
   SecureTokenStorage,
   TokenStorageError,
@@ -165,27 +167,90 @@ describe('EnvTokenStorage', () => {
   })
 })
 
-describe('SecureTokenStorage', () => {
-  test('should throw TokenStorageError on set when Bun.secrets is not available', async () => {
-    const storage = new SecureTokenStorage()
-    await expect(storage.set('my-token')).rejects.toThrow(TokenStorageError)
-    await expect(storage.set('my-token')).rejects.toThrow('Bun.secrets is not available')
+function createFakeSecrets() {
+  const entries = new Map<string, string>()
+  const keyOf = (options: { service: string; name: string }) => `${options.service}/${options.name}`
+  const backend: SecretsBackend = {
+    async get(options) {
+      return entries.get(keyOf(options)) ?? null
+    },
+    async set(options) {
+      entries.set(keyOf(options), options.value)
+    },
+    async delete(options) {
+      return entries.delete(keyOf(options))
+    },
+  }
+  return { backend, entries }
+}
+
+describe('resolveSecretsBackend', () => {
+  test('should throw a descriptive error when the Bun runtime is absent', () => {
+    expect(() => resolveSecretsBackend(undefined)).toThrow('requires the Bun runtime')
   })
 
-  test('should return null on get when Bun.secrets is not available', async () => {
-    const storage = new SecureTokenStorage()
+  test('should throw a descriptive error when Bun.secrets is missing', () => {
+    expect(() => resolveSecretsBackend({})).toThrow('requires the Bun runtime')
+  })
+
+  test('should return the secrets backend of the Bun runtime', () => {
+    const { backend } = createFakeSecrets()
+    expect(resolveSecretsBackend({ secrets: backend })).toBe(backend)
+  })
+})
+
+describe('SecureTokenStorage', () => {
+  test('should store and retrieve a token through Bun.secrets-style backend', async () => {
+    const { backend, entries } = createFakeSecrets()
+    const storage = new SecureTokenStorage('tok', 'svc', undefined, backend)
+
+    await storage.set('my-token')
+
+    expect(entries.get('svc/tok')).toBe('my-token')
+    expect(await storage.get()).toBe('my-token')
+  })
+
+  test('should return null on get when no token is stored', async () => {
+    const { backend } = createFakeSecrets()
+    const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
     expect(await storage.get()).toBeNull()
   })
 
-  test('TokenStorageError from set should carry the refresh token', async () => {
-    const storage = new SecureTokenStorage()
+  test('should remove the keychain entry on delete instead of blanking it', async () => {
+    const { backend, entries } = createFakeSecrets()
+    const storage = new SecureTokenStorage('tok', 'svc', undefined, backend)
+    await storage.set('my-token')
+
+    await storage.delete()
+
+    expect(entries.has('svc/tok')).toBe(false)
+    expect(await storage.get()).toBeNull()
+  })
+
+  test('should wrap backend set failures in TokenStorageError carrying the token', async () => {
+    const { backend } = createFakeSecrets()
+    backend.set = async () => {
+      throw new Error('keychain locked')
+    }
+    const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
+
     try {
       await storage.set('secret-refresh-token')
       expect.unreachable('Should have thrown')
     } catch (error) {
       expect(error).toBeInstanceOf(TokenStorageError)
       expect((error as TokenStorageError).refreshToken).toBe('secret-refresh-token')
+      expect((error as TokenStorageError).cause).toBeInstanceOf(Error)
     }
+  })
+
+  test('should propagate backend delete failures', async () => {
+    const { backend } = createFakeSecrets()
+    backend.delete = async () => {
+      throw new Error('keychain locked')
+    }
+    const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
+    await expect(storage.delete()).rejects.toThrow('keychain locked')
   })
 })
 
