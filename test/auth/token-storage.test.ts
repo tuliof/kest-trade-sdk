@@ -10,12 +10,14 @@ import {
   EnvTokenStorage,
   FileTokenStorage,
   type ITokenStorage,
+  isTokenStorageInstance,
   loadKeychainBackend,
   type MemoryStorageConfig,
   MemoryTokenStorage,
   type NodeKeyringModule,
   parseEnvValue,
   resolveDefaultTokenFilePath,
+  resolveTokenStorageKind,
   type SecretsBackend,
   type SecureStorageConfig,
   SecureTokenStorage,
@@ -595,6 +597,41 @@ describe('AutoTokenStorage', () => {
   })
 })
 
+describe('isTokenStorageInstance', () => {
+  test('recognizes objects implementing get, set and delete', () => {
+    expect(isTokenStorageInstance(new MemoryTokenStorage())).toBe(true)
+    expect(
+      isTokenStorageInstance({
+        get: async () => null,
+        set: async () => {},
+        delete: async () => {},
+      }),
+    ).toBe(true)
+  })
+
+  test('rejects storage configs and other values', () => {
+    expect(isTokenStorageInstance('auto')).toBe(false)
+    expect(isTokenStorageInstance({ type: 'file' })).toBe(false)
+    expect(isTokenStorageInstance(null)).toBe(false)
+  })
+})
+
+describe('resolveTokenStorageKind', () => {
+  test('describes each built-in storage and custom ones', async () => {
+    expect(await resolveTokenStorageKind(new MemoryTokenStorage())).toBe('memory')
+    expect(await resolveTokenStorageKind(new EnvTokenStorage())).toBe('env')
+    expect(await resolveTokenStorageKind(new FileTokenStorage('/tmp/x'))).toBe('file')
+    expect(await resolveTokenStorageKind(new SecureTokenStorage())).toBe('secure')
+    expect(
+      await resolveTokenStorageKind({
+        get: async () => null,
+        set: async () => {},
+        delete: async () => {},
+      }),
+    ).toBe('custom')
+  })
+})
+
 describe('createTokenStorage', () => {
   test('should create MemoryTokenStorage from string shorthand', () => {
     const storage = createTokenStorage('memory')
@@ -611,9 +648,17 @@ describe('createTokenStorage', () => {
     expect(storage).toBeInstanceOf(SecureTokenStorage)
   })
 
-  test('should default to EnvTokenStorage when no config provided', () => {
-    const storage = createTokenStorage()
-    expect(storage).toBeInstanceOf(EnvTokenStorage)
+  test('should default to AutoTokenStorage when no config provided', () => {
+    expect(createTokenStorage()).toBeInstanceOf(AutoTokenStorage)
+  })
+
+  test('should create file and auto storages from shorthand and config objects', () => {
+    expect(createTokenStorage('file')).toBeInstanceOf(FileTokenStorage)
+    expect(createTokenStorage({ type: 'file', filePath: '/tmp/x' })).toBeInstanceOf(
+      FileTokenStorage,
+    )
+    expect(createTokenStorage('auto')).toBeInstanceOf(AutoTokenStorage)
+    expect(createTokenStorage({ type: 'auto', service: 'svc' })).toBeInstanceOf(AutoTokenStorage)
   })
 
   test('should create from TokenStorageType constants', () => {

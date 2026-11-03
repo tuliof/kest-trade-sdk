@@ -23,7 +23,7 @@ export const TokenStorageType = {
   SECURE: 'secure',
 
   /**
-   * Store tokens in .env file (default, backward compatible)
+   * Store tokens in a .env file (plaintext, in the project directory by default)
    */
   ENV: 'env',
 
@@ -38,8 +38,8 @@ export const TokenStorageType = {
   FILE: 'file',
 
   /**
-   * Use the OS keychain when it is usable, otherwise a user-only file in the
-   * per-user config directory. The resolved backend is logged and observable.
+   * Default. Use the OS keychain when it is usable, otherwise a user-only file
+   * in the per-user config directory. The resolved backend is logged and observable.
    */
   AUTO: 'auto',
 } as const
@@ -177,16 +177,42 @@ export type TokenStorageConfig =
   | AutoStorageConfig
 
 /**
+ * Whether a value is a ready-made ITokenStorage rather than a storage config
+ */
+export function isTokenStorageInstance(value: unknown): value is ITokenStorage {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Partial<Record<keyof ITokenStorage, unknown>>
+  return (
+    typeof candidate.get === 'function' &&
+    typeof candidate.set === 'function' &&
+    typeof candidate.delete === 'function'
+  )
+}
+
+export type TokenStorageKind = AutoStorageBackendKind | 'env' | 'memory' | 'custom'
+
+/**
+ * Describe where a storage keeps the token; resolves the backend of AutoTokenStorage.
+ */
+export async function resolveTokenStorageKind(storage: ITokenStorage): Promise<TokenStorageKind> {
+  if (storage instanceof AutoTokenStorage) return storage.resolveBackendKind()
+  if (storage instanceof SecureTokenStorage) return 'secure'
+  if (storage instanceof FileTokenStorage) return 'file'
+  if (storage instanceof EnvTokenStorage) return 'env'
+  if (storage instanceof MemoryTokenStorage) return 'memory'
+  return 'custom'
+}
+
+/**
  * Create a token storage instance based on configuration
- * @param config - Storage configuration (string shorthand or detailed config)
+ * @param config - Storage configuration (string shorthand or detailed config); defaults to 'auto'
  * @param logger - Logger for storage operations (default: silent)
  */
 export function createTokenStorage(
   config?: TokenStorageConfig,
   logger: Logger = new SilentLogger(),
 ): ITokenStorage {
-  // Default to 'env' for backward compatibility
-  const storageConfig = config || 'env'
+  const storageConfig = config ?? 'auto'
 
   // Handle string shorthand
   if (typeof storageConfig === 'string') {

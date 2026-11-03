@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { AccountsClient } from '@/accounts/accounts-client'
 import { AuthClient } from '@/auth/auth-client'
+import { AutoTokenStorage } from '@/auth/token-storage'
 import { QuestradeClient } from '@/client'
 import { MarketClient } from '@/market/market-client'
 import type { TokenResponse } from '@/types/auth'
@@ -49,6 +50,36 @@ describe('QuestradeClient', () => {
   describe('constructor', () => {
     test('should create a client with no config, relying on storage and the env seed', () => {
       expect(new QuestradeClient({ tokenStorage: 'memory' })).toBeDefined()
+    })
+
+    test('should use a custom ITokenStorage instance as-is', async () => {
+      let stored: string | null = 'custom_stored'
+      const customStorage = {
+        get: async () => stored,
+        set: async (token: string) => {
+          stored = token
+        },
+        delete: async () => {
+          stored = null
+        },
+      }
+      AuthClient.prototype.refreshToken = mock(async (token: string) => ({
+        ...mockTokenResponse,
+        refresh_token: `rotated_${token}`,
+      }))
+      const client = new QuestradeClient({ tokenStorage: customStorage, autoRefresh: false })
+
+      await client.initialize()
+
+      expect(stored).toBe('rotated_custom_stored')
+      expect(await client.resolveTokenStorageKind()).toBe('custom')
+    })
+
+    test('should default to the auto token storage', () => {
+      const client = new QuestradeClient({ refreshToken: 'x' })
+      expect((client as unknown as { tokenStorage: unknown }).tokenStorage).toBeInstanceOf(
+        AutoTokenStorage,
+      )
     })
 
     test('should create client with refresh token', () => {

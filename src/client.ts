@@ -4,8 +4,11 @@ import { AuthClient } from '@/auth/auth-client'
 import {
   createTokenStorage,
   type ITokenStorage,
+  isTokenStorageInstance,
+  resolveTokenStorageKind,
   type TokenStorageConfig,
   TokenStorageError,
+  type TokenStorageKind,
   TokenStorageType,
 } from '@/auth/token-storage'
 import { HttpClient } from '@/http/http-client'
@@ -95,32 +98,33 @@ export interface QuestradeClientConfig {
   apiServer?: string
 
   /**
-   * Token storage strategy
-   * - 'secure': Use OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
-   * - 'env': Save to .env file (default for backward compatibility)
-   * - 'memory': In-memory only (not persistent, useful for testing)
-   * - Custom config: Provide SecureStorageConfig or EnvStorageConfig for more control
+   * Where the rotated refresh token is kept between runs.
+   * - 'auto' (default): OS keychain when usable, otherwise a user-only file (0600) in the
+   *   per-user config directory (headless servers, Docker, CI). Logged at WARN when the
+   *   file is chosen; check with resolveTokenStorageKind().
+   * - 'secure': OS keychain only (Keychain, Credential Manager, Secret Service); fails loud
+   *   when it is unusable. Uses Bun.secrets under Bun and @napi-rs/keyring under Node.js.
+   * - 'file': user-only file in the per-user config directory
+   * - 'env': .env file in the project directory (plaintext)
+   * - 'memory': in-memory only. Questrade rotates the token on every refresh, so after a
+   *   restart the token is lost and a new one must be generated in the Questrade API Centre.
+   * - A config object for any of the above, or your own ITokenStorage (e.g. a secrets
+   *   manager such as AWS Secrets Manager or Vault, recommended for production servers)
    *
-   * @default TokenStorageType.ENV
+   * @default TokenStorageType.AUTO
    *
-   * @example Using secure storage with constants
-   * ```typescript
-   * const { TokenStorageType } = require('kest-trade-sdk')
-   * const client = new QuestradeClient({
-   *   tokenStorage: TokenStorageType.SECURE,
-   *   refreshToken: 'initial_token', // Only needed first time
-   * })
-   * ```
-   *
-   * @example Using .env file (backward compatible)
+   * @example Custom storage
    * ```typescript
    * const client = new QuestradeClient({
-   *   tokenStorage: TokenStorageType.ENV,
-   *   refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
+   *   tokenStorage: {
+   *     get: () => vault.read('questrade/refresh-token'),
+   *     set: (token) => vault.write('questrade/refresh-token', token),
+   *     delete: () => vault.delete('questrade/refresh-token'),
+   *   },
    * })
    * ```
    */
-  tokenStorage?: TokenStorageConfig
+  tokenStorage?: TokenStorageConfig | ITokenStorage
 
   /**
    * Auto-refresh token before expiry (default: true)
@@ -222,13 +226,11 @@ export interface QuestradeClientConfig {
  *
  * @example
  * ```typescript
- * import { QuestradeClient, TokenStorageType } from 'kest-trade-sdk'
+ * import { QuestradeClient } from 'kest-trade-sdk'
  *
- * // Initialize with refresh token (saves to secure storage automatically)
- * const client = new QuestradeClient({
- *   tokenStorage: TokenStorageType.SECURE,
- *   refreshToken: 'your_refresh_token'
- * })
+ * // First run: `kest-trade-sdk login` or QUESTRADE_REFRESH_TOKEN seeds the token;
+ * // afterwards the rotated token is read from the default storage
+ * const client = new QuestradeClient()
  * await client.initialize()
  *
  * // Get accounts
@@ -251,7 +253,6 @@ export class QuestradeClient {
     apiServer: string
     autoRefresh: boolean
     refreshBuffer: number
-    tokenStorage: TokenStorageConfig
     httpLogOptions: HttpLogOptions
     requestTimeoutMs: number
     autoRefreshRetryDelayMs: number
@@ -285,7 +286,6 @@ export class QuestradeClient {
       apiServer: config.apiServer || '',
       autoRefresh: config.autoRefresh ?? true,
       refreshBuffer: config.refreshBuffer ?? 60,
-      tokenStorage: config.tokenStorage ?? TokenStorageType.ENV,
       httpLogOptions: {
         logRequestHeaders: true,
         logRequestBody: true,
@@ -303,7 +303,9 @@ export class QuestradeClient {
     }
 
     // Create token storage instance
-    this.tokenStorage = createTokenStorage(this.config.tokenStorage, this.logger)
+    this.tokenStorage = isTokenStorageInstance(config.tokenStorage)
+      ? config.tokenStorage
+      : createTokenStorage(config.tokenStorage ?? TokenStorageType.AUTO, this.logger)
 
     this.authClient = new AuthClient(this.config.requestTimeoutMs)
   }
@@ -580,6 +582,14 @@ export class QuestradeClient {
   public setHttpLogOptions(options: HttpLogOptions): void {
     this.config.httpLogOptions = options
     this.httpClient?.setLogOptions(options)
+  }
+
+  /**
+   * Where the refresh token is kept. For the default 'auto' storage this
+   * probes the OS keychain (once) and reports 'secure' or 'file'.
+   */
+  resolveTokenStorageKind(): Promise<TokenStorageKind> {
+    return resolveTokenStorageKind(this.tokenStorage)
   }
 
   /**
