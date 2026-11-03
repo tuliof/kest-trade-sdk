@@ -5,7 +5,6 @@ import {
   createLogger,
   type LogContext,
   type Logger,
-  type LogLevel,
   SilentLogger,
   serializeContext,
 } from '@/logger'
