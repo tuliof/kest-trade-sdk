@@ -64,6 +64,7 @@ describe('HttpClient', () => {
         expect(url).toBe(`${mockApiServer}v1/accounts`)
         return new Response(JSON.stringify({ data: 'test' }), {
           status: 200,
+          headers: { 'Content-Type': 'application/json' },
         })
       })
 
@@ -82,6 +83,7 @@ describe('HttpClient', () => {
 
         return new Response(JSON.stringify({ activities: [] }), {
           status: 200,
+          headers: { 'Content-Type': 'application/json' },
         })
       })
 
@@ -118,7 +120,7 @@ describe('HttpClient', () => {
             orderId: 789,
             status: 'Pending',
           }),
-          { status: 200 },
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
         )
       })
 
@@ -249,6 +251,105 @@ describe('HttpClient', () => {
     })
   })
 
+  describe('Non-JSON and empty bodies', () => {
+    test('should surface the real status code for an HTML 502 page', async () => {
+      globalThis.fetch = mock(
+        async () =>
+          new Response('<html><body>Bad Gateway</body></html>', {
+            status: 502,
+            headers: { 'Content-Type': 'text/html' },
+          }),
+      ) as unknown as typeof fetch
+
+      try {
+        await client.get('/v1/accounts')
+        expect.unreachable('Should have thrown')
+      } catch (error) {
+        expect(error).toBeInstanceOf(NetworkError)
+        expect((error as NetworkError).statusCode).toBe(502)
+        expect((error as NetworkError).message).toContain('Bad Gateway')
+      }
+    })
+
+    test('should throw AuthenticationError for a plain-text 401', async () => {
+      globalThis.fetch = mock(
+        async () =>
+          new Response('Unauthorized', { status: 401, headers: { 'Content-Type': 'text/plain' } }),
+      ) as unknown as typeof fetch
+
+      await expect(client.get('/v1/accounts')).rejects.toThrow(AuthenticationError)
+    })
+
+    test('should keep the status code when an error body is empty', async () => {
+      globalThis.fetch = mock(
+        async () => new Response(null, { status: 503 }),
+      ) as unknown as typeof fetch
+
+      try {
+        await client.get('/v1/accounts')
+        expect.unreachable('Should have thrown')
+      } catch (error) {
+        expect((error as NetworkError).statusCode).toBe(503)
+        expect((error as NetworkError).message).toBe('HTTP 503 error')
+      }
+    })
+
+    test('should keep the status code when a JSON error body is malformed', async () => {
+      globalThis.fetch = mock(
+        async () =>
+          new Response('{not json', {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      ) as unknown as typeof fetch
+
+      try {
+        await client.get('/v1/accounts')
+        expect.unreachable('Should have thrown')
+      } catch (error) {
+        expect((error as NetworkError).statusCode).toBe(500)
+      }
+    })
+
+    test('should truncate very long error bodies in the message', async () => {
+      globalThis.fetch = mock(
+        async () =>
+          new Response('x'.repeat(5000), { status: 500, headers: { 'Content-Type': 'text/html' } }),
+      ) as unknown as typeof fetch
+
+      try {
+        await client.get('/v1/accounts')
+        expect.unreachable('Should have thrown')
+      } catch (error) {
+        expect((error as NetworkError).message.length).toBeLessThan(300)
+      }
+    })
+
+    test('should resolve undefined for an empty 204 response', async () => {
+      globalThis.fetch = mock(
+        async () => new Response(null, { status: 204 }),
+      ) as unknown as typeof fetch
+
+      expect(await client.get('/v1/accounts')).toBeUndefined()
+    })
+
+    test('should reject a successful response that is not JSON', async () => {
+      globalThis.fetch = mock(
+        async () =>
+          new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } }),
+      ) as unknown as typeof fetch
+
+      try {
+        await client.get('/v1/accounts')
+        expect.unreachable('Should have thrown')
+      } catch (error) {
+        expect(error).toBeInstanceOf(NetworkError)
+        expect((error as NetworkError).statusCode).toBe(200)
+        expect((error as NetworkError).message).toContain('Expected a JSON response')
+      }
+    })
+  })
+
   describe('Token Management', () => {
     test('should allow updating access token', async () => {
       const newToken = 'new_token_456'
@@ -258,7 +359,10 @@ describe('HttpClient', () => {
         expect(options?.headers).toMatchObject({
           Authorization: `Bearer ${newToken}`,
         })
-        return new Response(JSON.stringify({ data: 'ok' }), { status: 200 })
+        return new Response(JSON.stringify({ data: 'ok' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
       })
 
       globalThis.fetch = mockFetch as unknown as typeof fetch

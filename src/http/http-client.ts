@@ -9,6 +9,37 @@ import {
   type HttpLogOptions,
 } from './logger'
 
+const MAX_ERROR_MESSAGE_LENGTH = 200
+
+/**
+ * Raw text of a body that was declared as JSON but could not be parsed.
+ */
+class UnparseableBody {
+  constructor(readonly text: string) {}
+}
+
+function truncate(text: string): string {
+  return text.length > MAX_ERROR_MESSAGE_LENGTH
+    ? `${text.slice(0, MAX_ERROR_MESSAGE_LENGTH)}...`
+    : text
+}
+
+/**
+ * Turn the raw response text into a trusted value.
+ * - empty body: undefined (e.g. 204)
+ * - JSON content type: the parsed value, or UnparseableBody if malformed
+ * - anything else (HTML error pages, plain text): the raw string
+ */
+function parseResponseBody(rawBody: string, contentType: string | undefined): unknown {
+  if (rawBody === '') return undefined
+  if (!contentType || !/json/i.test(contentType)) return new UnparseableBody(rawBody)
+  try {
+    return JSON.parse(rawBody)
+  } catch {
+    return new UnparseableBody(rawBody)
+  }
+}
+
 /**
  * HTTP Client for making requests to the Questrade API
  * Uses native fetch with Bearer token authentication
@@ -141,21 +172,19 @@ export class HttpClient {
 
       const duration = Date.now() - startTime
 
-      // Parse response body
-      const responseBody = await response.json()
-
-      // Log response
       const responseHeaders: Record<string, string> = {}
       response.headers.forEach((value, key) => {
         responseHeaders[key] = value
       })
+      const responseBody = parseResponseBody(await response.text(), responseHeaders['content-type'])
+
       const level = getResponseLogLevel(response.status)
       const responseEntry = formatResponseEntry(
         method,
         url,
         response.status,
         responseHeaders,
-        responseBody,
+        responseBody instanceof UnparseableBody ? responseBody.text : responseBody,
         duration,
         this.logOptions,
       )
@@ -163,9 +192,15 @@ export class HttpClient {
       else if (level === 'warn') this.logger.warn('HTTP Response', responseEntry)
       else this.logger.info('HTTP Response', responseEntry)
 
-      // Handle non-2xx responses
       if (!response.ok) {
         await this.handleErrorResponse(response.status, responseHeaders, responseBody)
+      }
+
+      if (responseBody instanceof UnparseableBody) {
+        throw new NetworkError(
+          `Expected a JSON response but received ${responseHeaders['content-type'] ?? 'no content type'}: ${truncate(responseBody.text)}`,
+          response.status,
+        )
       }
 
       return responseBody as T
@@ -205,24 +240,19 @@ export class HttpClient {
     headers: Record<string, string>,
     errorBody: unknown,
   ): Promise<never> {
-    // Try to parse error response
     let errorMessage = `HTTP ${statusCode} error`
     let apiErrorCode: number | undefined
 
-    try {
-      const contentType = headers['content-type']
-      if (contentType?.includes('application/json')) {
-        const parsedError = APIErrorSchema.safeParse(errorBody)
-
-        if (parsedError.success) {
-          apiErrorCode = parsedError.data.code
-          errorMessage = parsedError.data.message
-        }
-      } else if (typeof errorBody === 'string') {
-        errorMessage = errorBody
+    if (errorBody instanceof UnparseableBody) {
+      errorMessage = truncate(errorBody.text)
+    } else if (typeof errorBody === 'string') {
+      errorMessage = truncate(errorBody)
+    } else {
+      const parsedError = APIErrorSchema.safeParse(errorBody)
+      if (parsedError.success) {
+        apiErrorCode = parsedError.data.code
+        errorMessage = parsedError.data.message
       }
-    } catch {
-      // Failed to parse error, use default message
     }
 
     // Throw appropriate error type based on status code
