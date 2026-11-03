@@ -22,6 +22,17 @@ describe('MarketClient', () => {
   })
 
   describe('getSymbols', () => {
+    test('should throw ValidationError when neither ids nor names are provided', async () => {
+      const mockFetch = mock(async () => new Response('{}'))
+      globalThis.fetch = mockFetch as unknown as typeof fetch
+
+      await expect(marketClient.getSymbols({})).rejects.toThrow(ValidationError)
+      await expect(marketClient.getSymbols({ ids: [], names: [] })).rejects.toThrow(
+        'at least one symbol ID or name',
+      )
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
     test('should fetch symbols by IDs', async () => {
       const mockResponse: SymbolsResponse = {
         symbols: [

@@ -397,6 +397,43 @@ describe('AccountsClient', () => {
     })
   })
 
+  describe('stateFilter validation', () => {
+    test('should reject an unknown stateFilter before sending a request', async () => {
+      const mockFetch = mock(async () => new Response('{}'))
+      globalThis.fetch = mockFetch as unknown as typeof fetch
+      const start = new Date('2025-11-01T00:00:00Z')
+      const end = new Date('2025-11-02T00:00:00Z')
+
+      await expect(
+        accountsClient.getOrders('1', start, end, 'Everything' as unknown as 'All'),
+      ).rejects.toThrow(ValidationError)
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    test('should accept each documented stateFilter', async () => {
+      const urls: string[] = []
+      globalThis.fetch = mock(async (url: string) => {
+        urls.push(url)
+        return new Response('{"orders":[]}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as unknown as typeof fetch
+      const start = new Date('2025-11-01T00:00:00Z')
+      const end = new Date('2025-11-02T00:00:00Z')
+
+      for (const filter of ['All', 'Open', 'Closed'] as const) {
+        await accountsClient.getOrders('1', start, end, filter)
+      }
+
+      expect(urls.map((url) => new URL(url).searchParams.get('stateFilter'))).toEqual([
+        'All',
+        'Open',
+        'Closed',
+      ])
+    })
+  })
+
   describe('getActivities', () => {
     test('should successfully fetch account activities', async () => {
       const mockResponse: ActivitiesResponse = {

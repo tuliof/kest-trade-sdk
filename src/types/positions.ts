@@ -164,6 +164,13 @@ export const OrderStateSchema = z.enum([
 export type OrderState = z.infer<typeof OrderStateSchema>
 
 /**
+ * Order state filter accepted by the orders endpoint
+ */
+export const OrderStateFilterSchema = z.enum(['All', 'Open', 'Closed'])
+
+export type OrderStateFilter = z.infer<typeof OrderStateFilterSchema>
+
+/**
  * Time in force
  */
 export const TimeInForceSchema = z.enum([

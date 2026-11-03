@@ -98,6 +98,7 @@ export type {
   OrderLeg,
   OrderSide,
   OrderState,
+  OrderStateFilter,
   OrdersResponse,
   OrderType,
   // Position types

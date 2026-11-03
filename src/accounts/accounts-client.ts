@@ -8,6 +8,8 @@ import {
   ActivitiesResponseSchema,
   type ExecutionsResponse,
   ExecutionsResponseSchema,
+  type OrderStateFilter,
+  OrderStateFilterSchema,
   type OrdersResponse,
   OrdersResponseSchema,
   type PositionsResponse,
@@ -16,6 +18,18 @@ import {
 import { assertDateRangeWithinDays, assertValidDateRange } from '@/validation'
 
 const MAX_ACTIVITIES_RANGE_DAYS = 31
+
+function parseStateFilter(stateFilter: unknown): OrderStateFilter | undefined {
+  if (stateFilter === undefined) return undefined
+  const parsed = OrderStateFilterSchema.safeParse(stateFilter)
+  if (!parsed.success) {
+    throw new ValidationError(
+      `Invalid stateFilter ${JSON.stringify(stateFilter)}: expected 'All', 'Open' or 'Closed'`,
+      parsed.error.issues,
+    )
+  }
+  return parsed.data
+}
 
 /**
  * AccountsClient handles account-related operations
@@ -164,24 +178,26 @@ export class AccountsClient {
    * @param accountNumber - The account number
    * @param startTime - Start date/time
    * @param endTime - End date/time
-   * @param stateFilter - Optional order state filter (e.g., 'All', 'Open', 'Closed')
+   * @param stateFilter - Optional order state filter: 'All', 'Open' or 'Closed'
+   * @throws ValidationError if stateFilter is not one of the allowed values
    * @returns Order information for the account
    */
   async getOrders(
     accountNumber: string,
     startTime: Date,
     endTime: Date,
-    stateFilter?: string,
+    stateFilter?: OrderStateFilter,
   ): Promise<OrdersResponse> {
     assertValidDateRange(startTime, endTime)
+    const parsedStateFilter = parseStateFilter(stateFilter)
 
     const params = new URLSearchParams({
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
     })
 
-    if (stateFilter) {
-      params.append('stateFilter', stateFilter)
+    if (parsedStateFilter) {
+      params.append('stateFilter', parsedStateFilter)
     }
 
     const response = await this.httpClient.get<unknown>(

@@ -33,23 +33,27 @@ export class MarketClient {
   /**
    * Get symbol(s) information by ID or name
    * @param options - Symbol IDs or names to fetch
+   * @throws ValidationError if neither ids nor names contain a value
    * @returns Symbol information
    */
   async getSymbols(options: { ids?: number[]; names?: string[] }): Promise<SymbolsResponse> {
+    const hasIds = (options.ids?.length ?? 0) > 0
+    const hasNames = (options.names?.length ?? 0) > 0
+    if (!hasIds && !hasNames) {
+      throw new ValidationError('getSymbols requires at least one symbol ID or name', [])
+    }
+
     const params = new URLSearchParams()
 
-    if (options.ids && options.ids.length > 0) {
+    if (hasIds && options.ids) {
       params.append('ids', options.ids.join(','))
     }
 
-    if (options.names && options.names.length > 0) {
+    if (hasNames && options.names) {
       params.append('names', options.names.join(','))
     }
 
-    const queryString = params.toString()
-    const endpoint = queryString ? `/v1/symbols?${queryString}` : '/v1/symbols'
-
-    const response = await this.httpClient.get<unknown>(endpoint)
+    const response = await this.httpClient.get<unknown>(`/v1/symbols?${params}`)
 
     const validationResult = SymbolsResponseSchema.safeParse(response)
     if (!validationResult.success) {
