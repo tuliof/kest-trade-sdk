@@ -351,6 +351,52 @@ describe('AccountsClient', () => {
     })
   })
 
+  describe('date range validation', () => {
+    const valid = new Date('2025-11-01T00:00:00Z')
+    const earlier = new Date('2025-10-31T00:00:00Z')
+    const invalid = new Date('not a date')
+
+    beforeEach(() => {
+      globalThis.fetch = mock(async () => {
+        throw new Error('fetch must not be called for invalid input')
+      }) as unknown as typeof fetch
+    })
+
+    const methods = {
+      getActivities: (start: Date, end: Date) => accountsClient.getActivities('1', start, end),
+      getExecutions: (start: Date, end: Date) => accountsClient.getExecutions('1', start, end),
+      getOrders: (start: Date, end: Date) => accountsClient.getOrders('1', start, end),
+    }
+
+    for (const [name, call] of Object.entries(methods)) {
+      test(`${name} should reject endTime before startTime`, async () => {
+        await expect(call(valid, earlier)).rejects.toThrow(ValidationError)
+        await expect(call(valid, earlier)).rejects.toThrow('endTime must not be before startTime')
+      })
+
+      test(`${name} should reject an invalid startTime`, async () => {
+        await expect(call(invalid, valid)).rejects.toThrow('startTime must be a valid Date')
+      })
+
+      test(`${name} should reject an invalid endTime`, async () => {
+        await expect(call(valid, invalid)).rejects.toThrow('endTime must be a valid Date')
+      })
+    }
+
+    test('getExecutions and getOrders should not impose the 31 day activities limit', async () => {
+      const longEnd = new Date('2026-06-01T00:00:00Z')
+      globalThis.fetch = mock(async () => {
+        return new Response('{"executions":[],"orders":[]}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as unknown as typeof fetch
+
+      await expect(accountsClient.getExecutions('1', valid, longEnd)).resolves.toBeDefined()
+      await expect(accountsClient.getOrders('1', valid, longEnd)).resolves.toBeDefined()
+    })
+  })
+
   describe('getActivities', () => {
     test('should successfully fetch account activities', async () => {
       const mockResponse: ActivitiesResponse = {

@@ -16,6 +16,7 @@ import {
   type SymbolsResponse,
   SymbolsResponseSchema,
 } from '@/types/market'
+import { assertValidDateRange } from '@/validation'
 
 /**
  * MarketClient handles market data operations
@@ -148,6 +149,8 @@ export class MarketClient {
     endTime: Date,
     interval: CandleInterval,
   ): Promise<CandlesResponse> {
+    assertValidDateRange(startTime, endTime)
+
     const params = new URLSearchParams({
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),

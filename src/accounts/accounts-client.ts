@@ -13,6 +13,9 @@ import {
   type PositionsResponse,
   PositionsResponseSchema,
 } from '@/types/positions'
+import { assertDateRangeWithinDays, assertValidDateRange } from '@/validation'
+
+const MAX_ACTIVITIES_RANGE_DAYS = 31
 
 /**
  * AccountsClient handles account-related operations
@@ -90,7 +93,8 @@ export class AccountsClient {
    * Get activities for a specific account
    * @param accountNumber - The account number
    * @param startTime - Start date/time
-   * @param endTime - End date/time
+   * @param endTime - End date/time (at most 31 days after startTime)
+   * @throws ValidationError if a date is invalid, endTime is before startTime, or the range exceeds 31 days
    * @returns Activity information for the account
    */
   async getActivities(
@@ -98,11 +102,8 @@ export class AccountsClient {
     startTime: Date,
     endTime: Date,
   ): Promise<ActivitiesResponse> {
-    // Validate date range (max 31 days)
-    const daysDiff = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60 * 24)
-    if (daysDiff > 31) {
-      throw new ValidationError('Date range cannot exceed 31 days', [])
-    }
+    assertValidDateRange(startTime, endTime)
+    assertDateRangeWithinDays(startTime, endTime, MAX_ACTIVITIES_RANGE_DAYS)
 
     const params = new URLSearchParams({
       startTime: startTime.toISOString(),
@@ -136,6 +137,8 @@ export class AccountsClient {
     startTime: Date,
     endTime: Date,
   ): Promise<ExecutionsResponse> {
+    assertValidDateRange(startTime, endTime)
+
     const params = new URLSearchParams({
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
@@ -170,6 +173,8 @@ export class AccountsClient {
     endTime: Date,
     stateFilter?: string,
   ): Promise<OrdersResponse> {
+    assertValidDateRange(startTime, endTime)
+
     const params = new URLSearchParams({
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
