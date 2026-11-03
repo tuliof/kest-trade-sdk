@@ -705,6 +705,26 @@ describe('QuestradeClient', () => {
       expect(client.isTokenExpiringSoon(300)).toBe(true)
     })
 
+    test('should throw from isTokenExpired in access-token-only mode', async () => {
+      const client = new QuestradeClient({
+        accessToken: 'test_access_token',
+        apiServer: 'https://api.test.questrade.com',
+      })
+      await client.initialize()
+
+      expect(() => client.isTokenExpired()).toThrow('access-token-only mode')
+    })
+
+    test('should throw from isTokenExpiringSoon in access-token-only mode', async () => {
+      const client = new QuestradeClient({
+        accessToken: 'test_access_token',
+        apiServer: 'https://api.test.questrade.com',
+      })
+      await client.initialize()
+
+      expect(() => client.isTokenExpiringSoon()).toThrow('access-token-only mode')
+    })
+
     test('should get current token', async () => {
       const client = new QuestradeClient({
         refreshToken: 'test_refresh_token',

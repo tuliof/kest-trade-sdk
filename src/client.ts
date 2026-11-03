@@ -530,16 +530,35 @@ export class QuestradeClient {
 
   /**
    * Check if the current token is expired
+   *
+   * @throws Error in access-token-only mode (accessToken + apiServer), where the
+   * expiry time is unknown and a boolean answer would be a guess. Use a
+   * refreshToken if you need expiry tracking.
    */
   isTokenExpired(): boolean {
+    this.assertTokenExpiryIsKnown('isTokenExpired')
     return this.authClient.isTokenExpired()
   }
 
   /**
    * Check if the current token will expire soon
+   *
+   * @throws Error in access-token-only mode (accessToken + apiServer); see isTokenExpired
    */
   isTokenExpiringSoon(bufferSeconds?: number): boolean {
+    this.assertTokenExpiryIsKnown('isTokenExpiringSoon')
     return this.authClient.isTokenExpiringSoon(bufferSeconds)
+  }
+
+  private assertTokenExpiryIsKnown(methodName: string): void {
+    if (!this.isAccessTokenOnlyMode()) return
+    throw new Error(
+      `${methodName}() is unavailable in access-token-only mode: the expiry time of a caller-supplied access token is unknown. Provide a refreshToken to enable expiry tracking.`,
+    )
+  }
+
+  private isAccessTokenOnlyMode(): boolean {
+    return Boolean(this.config.accessToken && this.config.apiServer)
   }
 
   /**
