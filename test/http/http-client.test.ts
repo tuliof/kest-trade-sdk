@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import { HttpClient } from '@/http/http-client'
+import type { Logger } from '@/logger'
 import { AuthenticationError, NetworkError, RateLimitError } from '@/types/errors'
 
 describe('HttpClient', () => {
@@ -347,6 +348,107 @@ describe('HttpClient', () => {
         expect((error as NetworkError).statusCode).toBe(200)
         expect((error as NetworkError).message).toContain('Expected a JSON response')
       }
+    })
+  })
+
+  describe('Response logging', () => {
+    interface LoggedCall {
+      level: string
+      message: string
+      context?: Record<string, unknown>
+    }
+
+    function createRecordingLogger(calls: LoggedCall[]): Logger {
+      const record = (level: string) => (message: string, context?: Record<string, unknown>) => {
+        calls.push({ level, message, context })
+      }
+      return {
+        debug: record('debug'),
+        info: record('info'),
+        warn: record('warn'),
+        error: record('error'),
+      }
+    }
+
+    function mockAccountsResponse(status = 200) {
+      globalThis.fetch = mock(
+        async () =>
+          new Response(JSON.stringify({ accounts: [], userId: 987654 }), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      ) as unknown as typeof fetch
+    }
+
+    test('should keep the body out of info-level response lines', async () => {
+      const calls: LoggedCall[] = []
+      const loggingClient = new HttpClient(
+        mockApiServer,
+        mockAccessToken,
+        createRecordingLogger(calls),
+        { logResponseBody: true },
+      )
+      mockAccountsResponse()
+
+      await loggingClient.get('/v1/accounts')
+
+      const infoCalls = calls.filter((call) => call.level === 'info')
+      expect(infoCalls).toHaveLength(1)
+      expect(infoCalls[0]?.context?.responseStatus).toBe(200)
+      expect(infoCalls[0]?.context?.url).toContain('/v1/accounts')
+      expect(typeof infoCalls[0]?.context?.duration).toBe('number')
+      expect(infoCalls[0]?.context?.responseBody).toBeUndefined()
+    })
+
+    test('should emit the full response body only at debug level', async () => {
+      const calls: LoggedCall[] = []
+      const loggingClient = new HttpClient(
+        mockApiServer,
+        mockAccessToken,
+        createRecordingLogger(calls),
+        { logResponseBody: true },
+      )
+      mockAccountsResponse()
+
+      await loggingClient.get('/v1/accounts')
+
+      const bodyCalls = calls.filter((call) => call.context?.responseBody !== undefined)
+      expect(bodyCalls).toHaveLength(1)
+      expect(bodyCalls[0]?.level).toBe('debug')
+    })
+
+    test('should not emit bodies at all when logResponseBody is disabled', async () => {
+      const calls: LoggedCall[] = []
+      const loggingClient = new HttpClient(
+        mockApiServer,
+        mockAccessToken,
+        createRecordingLogger(calls),
+        { logResponseBody: false },
+      )
+      mockAccountsResponse()
+
+      await loggingClient.get('/v1/accounts')
+
+      expect(calls.some((call) => call.context?.responseBody !== undefined)).toBe(false)
+    })
+
+    test('should keep the body out of error-level response lines', async () => {
+      const calls: LoggedCall[] = []
+      const loggingClient = new HttpClient(
+        mockApiServer,
+        mockAccessToken,
+        createRecordingLogger(calls),
+        { logResponseBody: true },
+      )
+      mockAccountsResponse(500)
+
+      await expect(loggingClient.get('/v1/accounts')).rejects.toThrow(NetworkError)
+
+      const responseLine = calls.find(
+        (call) => call.level === 'error' && call.message === 'HTTP Response',
+      )
+      expect(responseLine?.context?.responseStatus).toBe(500)
+      expect(responseLine?.context?.responseBody).toBeUndefined()
     })
   })
 

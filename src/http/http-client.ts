@@ -170,27 +170,22 @@ export class HttpClient {
         headers: requestHeaders,
       })
 
-      const duration = Date.now() - startTime
-
       const responseHeaders: Record<string, string> = {}
       response.headers.forEach((value, key) => {
         responseHeaders[key] = value
       })
       const responseBody = parseResponseBody(await response.text(), responseHeaders['content-type'])
 
-      const level = getResponseLogLevel(response.status)
-      const responseEntry = formatResponseEntry(
+      const duration = Date.now() - startTime
+
+      this.logResponse(
         method,
         url,
         response.status,
         responseHeaders,
         responseBody instanceof UnparseableBody ? responseBody.text : responseBody,
         duration,
-        this.logOptions,
       )
-      if (level === 'error') this.logger.error('HTTP Response', responseEntry)
-      else if (level === 'warn') this.logger.warn('HTTP Response', responseEntry)
-      else this.logger.info('HTTP Response', responseEntry)
 
       if (!response.ok) {
         await this.handleErrorResponse(response.status, responseHeaders, responseBody)
@@ -230,6 +225,32 @@ export class HttpClient {
       )
       throw networkError
     }
+  }
+
+  /**
+   * Log the response line (status, url, duration) at a status-derived level.
+   * The body is financial data, so it is only emitted separately at debug level.
+   */
+  private logResponse(
+    method: string,
+    url: string,
+    status: number,
+    headers: Record<string, string>,
+    body: unknown,
+    duration: number,
+  ): void {
+    const level = getResponseLogLevel(status)
+    const summary = formatResponseEntry(method, url, status, headers, undefined, duration, {
+      ...this.logOptions,
+      logResponseBody: false,
+    })
+    this.logger[level]('HTTP Response', summary)
+
+    if (!this.logOptions.logResponseBody) return
+    this.logger.debug(
+      'HTTP Response Body',
+      formatResponseEntry(method, url, status, headers, body, duration, this.logOptions),
+    )
   }
 
   /**

@@ -22,10 +22,10 @@ Authorization headers are automatically redacted.
 
 | Level    | What you see                                                        |
 | -------- | ------------------------------------------------------------------- |
-| `debug`  | HTTP requests + responses, token storage operations                 |
-| `info`   | HTTP responses (2xx), token stored/loaded/deleted                   |
-| `warn`   | 3xx/4xx responses, storage warnings (e.g., Bun.secrets unavailable) |
-| `error`  | 5xx responses, storage failures, auto-refresh failures              |
+| `debug`  | HTTP requests, responses, full response bodies, token storage ops   |
+| `info`   | HTTP responses (2xx, status/url/duration only), token stored/deleted |
+| `warn`   | 3xx/4xx responses (status/url/duration only), storage warnings      |
+| `error`  | 5xx responses (status/url/duration only), storage and auto-refresh failures |
 | `none`   | Silent (default)                                                    |
 
 ```typescript
@@ -41,6 +41,7 @@ Output format: `[LEVEL] Message {"key":"value"}`
 ```
 [DEBUG] HTTP Request {"method":"GET","url":"https://api01.iq.questrade.com/v1/accounts"}
 [INFO] HTTP Response {"method":"GET","url":"https://api01.iq.questrade.com/v1/accounts","responseStatus":200,"duration":145}
+[DEBUG] HTTP Response Body {"method":"GET","url":"https://api01.iq.questrade.com/v1/accounts","responseStatus":200,"responseBody":{...}}
 [INFO] Token stored in OS keychain
 ```
 
@@ -48,6 +49,11 @@ Output format: `[LEVEL] Message {"key":"value"}`
 
 When logging is enabled, request/response headers and bodies are included
 by default — with sensitive data automatically redacted (see below).
+
+Response bodies contain financial data (balances, positions, orders), so they
+are logged only at `debug` level, in a separate `HTTP Response Body` entry.
+The `info`, `warn` and `error` response entries carry status, URL and duration
+without the body, even when `logResponseBody` is `true`.
 
 To suppress specific details:
 
@@ -67,7 +73,7 @@ const client = new QuestradeClient({
 | `logRequestHeaders`     | `true`  | Request headers (Authorization redacted)  |
 | `logRequestBody`        | `true`  | Request body (tokens redacted)            |
 | `logResponseHeaders`    | `true`  | Response headers                           |
-| `logResponseBody`       | `true`  | Response body (tokens redacted)           |
+| `logResponseBody`       | `true`  | Response body at debug level only (tokens redacted) |
 | `redactFn`              | default | Custom redaction function                 |
 
 ### Redaction
