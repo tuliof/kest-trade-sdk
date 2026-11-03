@@ -154,6 +154,36 @@ describe('EnvTokenStorage', () => {
     expect(await readdir(tempDir)).toEqual(['.env'])
   })
 
+  test('should resolve relative env paths against the working directory', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const relativeName = `.env.rel-${Math.random().toString(36).slice(2)}`
+    const relativeStorage = new EnvTokenStorage(relativeName)
+    try {
+      await relativeStorage.set('rel-token')
+      expect(await readFile(join(process.cwd(), relativeName), 'utf8')).toBe(
+        'QUESTRADE_REFRESH_TOKEN=rel-token\n',
+      )
+      expect(await relativeStorage.get()).toBe('rel-token')
+    } finally {
+      await relativeStorage.delete()
+    }
+  })
+
+  test('should not depend on Bun.file for env file access', async () => {
+    const originalFile = Bun.file
+    const bunRuntime = Bun as { file: unknown }
+    bunRuntime.file = () => {
+      throw new Error('Bun.file must not be used')
+    }
+    try {
+      await storage.set('portable')
+      expect(await storage.get()).toBe('portable')
+      await storage.delete()
+    } finally {
+      bunRuntime.file = originalFile
+    }
+  })
+
   test('should delete token from .env file', async () => {
     await storage.set('my-refresh-token')
     await storage.delete()

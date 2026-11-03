@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 import { randomBytes } from 'node:crypto'
-import { rename, unlink, writeFile } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 import { type Logger, SilentLogger } from '@/logger'
 
 /**
@@ -340,24 +340,24 @@ export class EnvTokenStorage implements ITokenStorage {
     }
   }
 
+  private resolveFullPath(): string {
+    return resolve(this.envPath)
+  }
+
+  private async readEnvFileIfPresent(fullPath: string): Promise<string | null> {
+    try {
+      return await readFile(fullPath, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
+
   async get(): Promise<string | null> {
     try {
-      if (typeof process === 'undefined' || !process.cwd) {
-        return null
-      }
+      const content = await this.readEnvFileIfPresent(this.resolveFullPath())
+      if (content === null) return null
 
-      const fullPath = this.envPath.startsWith('/')
-        ? this.envPath
-        : `${process.cwd()}/${this.envPath}`
-
-      const envFile = Bun.file(fullPath)
-      const exists = await envFile.exists()
-
-      if (!exists) {
-        return null
-      }
-
-      const content = await envFile.text()
       const match = content.match(new RegExp(`^${this.escapeVarName()}=(.*)$`, 'm'))
 
       return match?.[1] || null
@@ -370,25 +370,15 @@ export class EnvTokenStorage implements ITokenStorage {
   }
 
   async set(refreshToken: string): Promise<void> {
-    if (typeof process === 'undefined' || !process.cwd) {
-      throw new TokenStorageError('Cannot save token: not in Node.js/Bun environment', refreshToken)
-    }
-
-    const fullPath = this.envPath.startsWith('/')
-      ? this.envPath
-      : `${process.cwd()}/${this.envPath}`
-
     try {
-      const envFile = Bun.file(fullPath)
-      const exists = await envFile.exists()
+      const fullPath = this.resolveFullPath()
+      const envContent = await this.readEnvFileIfPresent(fullPath)
 
-      if (!exists) {
+      if (envContent === null) {
         await this.writeFileAtomically(fullPath, `${this.varName}=${refreshToken}\n`)
         this.logger.info('Token saved to new file', { path: this.envPath })
         return
       }
-
-      const envContent = await envFile.text()
 
       const variableLine = this.variableLinePattern()
 
@@ -402,9 +392,6 @@ export class EnvTokenStorage implements ITokenStorage {
         this.logger.info('Token saved', { path: this.envPath })
       }
     } catch (error) {
-      if (error instanceof TokenStorageError) {
-        throw error
-      }
       throw new TokenStorageError(`Failed to save token to ${this.envPath}`, refreshToken, {
         cause: error,
       })
@@ -413,22 +400,10 @@ export class EnvTokenStorage implements ITokenStorage {
 
   async delete(): Promise<void> {
     try {
-      if (typeof process === 'undefined' || !process.cwd) {
-        return
-      }
+      const fullPath = this.resolveFullPath()
+      const content = await this.readEnvFileIfPresent(fullPath)
+      if (content === null) return
 
-      const fullPath = this.envPath.startsWith('/')
-        ? this.envPath
-        : `${process.cwd()}/${this.envPath}`
-
-      const envFile = Bun.file(fullPath)
-      const exists = await envFile.exists()
-
-      if (!exists) {
-        return
-      }
-
-      const content = await envFile.text()
       const updated = content.replace(new RegExp(`^${this.escapeVarName()}=.*\n?`, 'm'), '')
 
       if (updated.trim() === '') {
