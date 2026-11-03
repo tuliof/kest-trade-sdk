@@ -313,6 +313,44 @@ describe('AccountsClient', () => {
     })
   })
 
+  describe('path parameter encoding', () => {
+    const hostileAccountNumber = '123/../admin?x=1#frag'
+    const encodedSegment = '123%2F..%2Fadmin%3Fx%3D1%23frag'
+
+    async function capturePath(call: () => Promise<unknown>): Promise<string> {
+      let capturedUrl = ''
+      globalThis.fetch = mock(async (url: string) => {
+        capturedUrl = url
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }) as unknown as typeof fetch
+      await call().catch(() => {})
+      return capturedUrl
+    }
+
+    const range = [new Date('2025-11-01T00:00:00Z'), new Date('2025-11-02T00:00:00Z')] as const
+
+    test('should encode the account number in getBalances', async () => {
+      const url = await capturePath(() => accountsClient.getBalances(hostileAccountNumber))
+      expect(url).toBe(`https://api01.iq.questrade.com/v1/accounts/${encodedSegment}/balances`)
+    })
+
+    test('should encode the account number in getPositions', async () => {
+      const url = await capturePath(() => accountsClient.getPositions(hostileAccountNumber))
+      expect(url).toBe(`https://api01.iq.questrade.com/v1/accounts/${encodedSegment}/positions`)
+    })
+
+    test('should encode the account number in getActivities, getExecutions and getOrders', async () => {
+      for (const [endpoint, call] of [
+        ['activities', () => accountsClient.getActivities(hostileAccountNumber, ...range)],
+        ['executions', () => accountsClient.getExecutions(hostileAccountNumber, ...range)],
+        ['orders', () => accountsClient.getOrders(hostileAccountNumber, ...range)],
+      ] as const) {
+        const url = await capturePath(call)
+        expect(url).toContain(`/v1/accounts/${encodedSegment}/${endpoint}?`)
+      }
+    })
+  })
+
   describe('getActivities', () => {
     test('should successfully fetch account activities', async () => {
       const mockResponse: ActivitiesResponse = {

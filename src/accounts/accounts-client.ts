@@ -50,7 +50,9 @@ export class AccountsClient {
    * @returns Balance information for the account
    */
   async getBalances(accountNumber: string): Promise<BalancesResponse> {
-    const response = await this.httpClient.get<unknown>(`/v1/accounts/${accountNumber}/balances`)
+    const response = await this.httpClient.get<unknown>(
+      `/v1/accounts/${encodeURIComponent(accountNumber)}/balances`,
+    )
 
     const validationResult = BalancesResponseSchema.safeParse(response)
     if (!validationResult.success) {
@@ -69,7 +71,9 @@ export class AccountsClient {
    * @returns Position information for the account
    */
   async getPositions(accountNumber: string): Promise<PositionsResponse> {
-    const response = await this.httpClient.get<unknown>(`/v1/accounts/${accountNumber}/positions`)
+    const response = await this.httpClient.get<unknown>(
+      `/v1/accounts/${encodeURIComponent(accountNumber)}/positions`,
+    )
 
     const validationResult = PositionsResponseSchema.safeParse(response)
     if (!validationResult.success) {
@@ -106,7 +110,7 @@ export class AccountsClient {
     })
 
     const response = await this.httpClient.get<unknown>(
-      `/v1/accounts/${accountNumber}/activities?${params}`,
+      `/v1/accounts/${encodeURIComponent(accountNumber)}/activities?${params}`,
     )
 
     const validationResult = ActivitiesResponseSchema.safeParse(response)
@@ -138,7 +142,7 @@ export class AccountsClient {
     })
 
     const response = await this.httpClient.get<unknown>(
-      `/v1/accounts/${accountNumber}/executions?${params}`,
+      `/v1/accounts/${encodeURIComponent(accountNumber)}/executions?${params}`,
     )
 
     const validationResult = ExecutionsResponseSchema.safeParse(response)
@@ -176,7 +180,7 @@ export class AccountsClient {
     }
 
     const response = await this.httpClient.get<unknown>(
-      `/v1/accounts/${accountNumber}/orders?${params}`,
+      `/v1/accounts/${encodeURIComponent(accountNumber)}/orders?${params}`,
     )
 
     const validationResult = OrdersResponseSchema.safeParse(response)

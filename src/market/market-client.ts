@@ -119,7 +119,9 @@ export class MarketClient {
    * @returns Option chain information
    */
   async getOptionChain(symbolId: number): Promise<OptionChainResponse> {
-    const response = await this.httpClient.get<unknown>(`/v1/symbols/${symbolId}/options`)
+    const response = await this.httpClient.get<unknown>(
+      `/v1/symbols/${encodeURIComponent(String(symbolId))}/options`,
+    )
 
     const validationResult = OptionChainResponseSchema.safeParse(response)
     if (!validationResult.success) {
@@ -152,7 +154,9 @@ export class MarketClient {
       interval,
     })
 
-    const response = await this.httpClient.get<unknown>(`/v1/markets/candles/${symbolId}?${params}`)
+    const response = await this.httpClient.get<unknown>(
+      `/v1/markets/candles/${encodeURIComponent(String(symbolId))}?${params}`,
+    )
 
     const validationResult = CandlesResponseSchema.safeParse(response)
     if (!validationResult.success) {
