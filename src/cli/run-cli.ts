@@ -10,7 +10,7 @@ import { AuthenticationError } from '@/types/errors'
 
 export const CLI_NAME = 'kest-trade-sdk'
 
-const CLI_STORAGE_TYPES = ['auto', 'secure', 'file', 'env'] as const
+const CLI_STORAGE_TYPES = ['auto', 'secure', 'file'] as const
 type CliStorageType = (typeof CLI_STORAGE_TYPES)[number]
 
 type CliCommand = 'login' | 'logout' | 'status' | 'help'
@@ -47,7 +47,7 @@ Commands:
   help     Show this message.
 
 Options:
-  --storage <type>  auto (default) | secure | file | env
+  --storage <type>  auto (default) | secure | file
                     Must match the tokenStorage your application uses.`
 
 class CliUsageError extends Error {}

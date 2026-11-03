@@ -121,15 +121,6 @@ tokenStorage: 'file'
 tokenStorage: { type: 'file', filePath: '/var/lib/my-bot/questrade-token' }
 ```
 
-#### Env
-
-Writes the token in plaintext to a `.env` file in the project directory:
-
-```typescript
-tokenStorage: 'env'
-tokenStorage: { type: 'env', envPath: '.env.prod', varName: 'MY_TOKEN' }
-```
-
 #### Memory (for testing)
 
 Stores the token in memory only. Because Questrade rotates the token on every refresh,
@@ -245,7 +236,7 @@ const client = new QuestradeClient({
 ### Don't
 
 - Don't reuse old refresh tokens (they're invalidated immediately)
-- Don't store tokens in plaintext inside the project (`'env'`) in production
+- Don't store tokens in plaintext inside the project
 - Don't commit tokens to version control
 - Don't run integration tests frequently (each run rotates the token)
 

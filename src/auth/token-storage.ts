@@ -7,7 +7,7 @@ import { type Logger, SilentLogger } from '@/logger'
 
 /**
  * Token storage abstraction for managing Questrade refresh tokens
- * Supports multiple backends: OS keychain (Bun.secrets), .env file, memory, and custom
+ * Supports multiple backends: OS keychain, user-only file, memory, and custom
  */
 
 /**
@@ -21,11 +21,6 @@ export const TokenStorageType = {
    * - Linux: Secret Service API
    */
   SECURE: 'secure',
-
-  /**
-   * Store tokens in a .env file (plaintext, in the project directory by default)
-   */
-  ENV: 'env',
 
   /**
    * Store tokens in memory only (not persistent, useful for testing)
@@ -90,7 +85,7 @@ export class TokenStorageError extends Error {
 }
 
 export interface StorageConfig {
-  type: 'secure' | 'env' | 'memory' | 'file' | 'auto'
+  type: 'secure' | 'memory' | 'file' | 'auto'
 }
 
 /**
@@ -109,23 +104,6 @@ export interface SecureStorageConfig extends StorageConfig {
    * @default 'kest-trade-sdk'
    */
   service?: string
-}
-
-/**
- * Configuration for .env file storage
- */
-export interface EnvStorageConfig extends StorageConfig {
-  type: 'env'
-  /**
-   * Path to .env file
-   * @default '.env'
-   */
-  envPath?: string
-  /**
-   * Environment variable name
-   * @default 'QUESTRADE_REFRESH_TOKEN'
-   */
-  varName?: string
 }
 
 /**
@@ -161,7 +139,7 @@ export interface AutoStorageConfig extends StorageConfig {
 }
 
 /**
- * Token storage type value union: 'secure' | 'env' | 'memory' | 'file' | 'auto'
+ * Token storage type value union: 'secure' | 'memory' | 'file' | 'auto'
  */
 export type TokenStorageTypeValue = (typeof TokenStorageType)[keyof typeof TokenStorageType]
 
@@ -171,7 +149,6 @@ export type TokenStorageTypeValue = (typeof TokenStorageType)[keyof typeof Token
 export type TokenStorageConfig =
   | TokenStorageTypeValue
   | SecureStorageConfig
-  | EnvStorageConfig
   | MemoryStorageConfig
   | FileStorageConfig
   | AutoStorageConfig
@@ -189,7 +166,7 @@ export function isTokenStorageInstance(value: unknown): value is ITokenStorage {
   )
 }
 
-export type TokenStorageKind = AutoStorageBackendKind | 'env' | 'memory' | 'custom'
+export type TokenStorageKind = AutoStorageBackendKind | 'memory' | 'custom'
 
 /**
  * Describe where a storage keeps the token; resolves the backend of AutoTokenStorage.
@@ -198,7 +175,6 @@ export async function resolveTokenStorageKind(storage: ITokenStorage): Promise<T
   if (storage instanceof AutoTokenStorage) return storage.resolveBackendKind()
   if (storage instanceof SecureTokenStorage) return 'secure'
   if (storage instanceof FileTokenStorage) return 'file'
-  if (storage instanceof EnvTokenStorage) return 'env'
   if (storage instanceof MemoryTokenStorage) return 'memory'
   return 'custom'
 }
@@ -219,8 +195,6 @@ export function createTokenStorage(
     switch (storageConfig) {
       case 'secure':
         return new SecureTokenStorage(undefined, undefined, logger)
-      case 'env':
-        return new EnvTokenStorage(undefined, undefined, logger)
       case 'memory':
         return new MemoryTokenStorage(logger)
       case 'file':
@@ -236,8 +210,6 @@ export function createTokenStorage(
   switch (storageConfig.type) {
     case 'secure':
       return new SecureTokenStorage(storageConfig.name, storageConfig.service, logger)
-    case 'env':
-      return new EnvTokenStorage(storageConfig.envPath, storageConfig.varName, logger)
     case 'memory':
       return new MemoryTokenStorage(logger)
     case 'file':
@@ -325,7 +297,7 @@ export async function loadKeychainBackend(
     return adaptNodeKeyring(await runtime.importNodeKeyring())
   } catch (error) {
     throw new Error(
-      'OS keychain access on Node.js requires the optional dependency @napi-rs/keyring, which could not be loaded. Install it (npm install @napi-rs/keyring), run under Bun, or use tokenStorage "file", "env" or "memory".',
+      'OS keychain access on Node.js requires the optional dependency @napi-rs/keyring, which could not be loaded. Install it (npm install @napi-rs/keyring), run under Bun, or use tokenStorage "file" or "memory".',
       { cause: error },
     )
   }
@@ -606,122 +578,6 @@ export class AutoTokenStorage implements ITokenStorage {
 
   async delete(): Promise<void> {
     return (await this.selectBackend()).storage.delete()
-  }
-}
-
-/**
- * Normalize a raw .env value: drop a trailing carriage return (CRLF files)
- * and one pair of matching surrounding quotes.
- */
-export function parseEnvValue(rawValue: string): string {
-  const value = rawValue.replace(/\r$/, '')
-  const isQuoted =
-    value.length >= 2 &&
-    (value.startsWith('"') || value.startsWith("'")) &&
-    value.endsWith(value[0] as string)
-  return isQuoted ? value.slice(1, -1) : value
-}
-
-/**
- * Token storage using .env file
- * Maintains backward compatibility with existing implementation
- */
-export class EnvTokenStorage implements ITokenStorage {
-  private readonly envPath: string
-  private readonly varName: string
-  private readonly logger: Logger
-
-  constructor(
-    envPath: string = '.env',
-    varName: string = 'QUESTRADE_REFRESH_TOKEN',
-    logger: Logger = new SilentLogger(),
-  ) {
-    this.envPath = envPath
-    this.varName = varName
-    this.logger = logger
-  }
-
-  private escapeVarName(): string {
-    return this.varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  }
-
-  private variableLinePattern(): RegExp {
-    return new RegExp(`^${this.escapeVarName()}=.*$`, 'm')
-  }
-
-  private resolveFullPath(): string {
-    return resolve(this.envPath)
-  }
-
-  async get(): Promise<string | null> {
-    try {
-      const content = await readFileIfPresent(this.resolveFullPath())
-      if (content === null) return null
-
-      const match = content.match(new RegExp(`^${this.escapeVarName()}=(.*)$`, 'm'))
-
-      return parseEnvValue(match?.[1] ?? '') || null
-    } catch (error) {
-      this.logger.error(`Failed to read token from ${this.envPath}`, {
-        error: error instanceof Error ? error.message : String(error),
-      })
-      throw new Error(
-        `Failed to read token from ${this.envPath}: ${error instanceof Error ? error.message : String(error)}. Check that the file is readable.`,
-        { cause: error },
-      )
-    }
-  }
-
-  async set(refreshToken: string): Promise<void> {
-    try {
-      const fullPath = this.resolveFullPath()
-      const envContent = await readFileIfPresent(fullPath)
-
-      if (envContent === null) {
-        await writeFileAtomically(fullPath, `${this.varName}=${refreshToken}\n`)
-        this.logger.info('Token saved to new file', { path: this.envPath })
-        return
-      }
-
-      const variableLine = this.variableLinePattern()
-
-      if (variableLine.test(envContent)) {
-        const updated = envContent.replace(variableLine, () => `${this.varName}=${refreshToken}`)
-        await writeFileAtomically(fullPath, updated)
-        this.logger.info('Token refreshed and saved', { path: this.envPath })
-      } else {
-        const updated = `${envContent.trimEnd()}\n${this.varName}=${refreshToken}\n`
-        await writeFileAtomically(fullPath, updated)
-        this.logger.info('Token saved', { path: this.envPath })
-      }
-    } catch (error) {
-      throw new TokenStorageError(`Failed to save token to ${this.envPath}`, refreshToken, {
-        cause: error,
-      })
-    }
-  }
-
-  async delete(): Promise<void> {
-    try {
-      const fullPath = this.resolveFullPath()
-      const content = await readFileIfPresent(fullPath)
-      if (content === null) return
-
-      const updated = content.replace(new RegExp(`^${this.escapeVarName()}=.*\n?`, 'm'), '')
-
-      if (updated.trim() === '') {
-        await unlink(fullPath)
-        this.logger.info('File deleted (was only token)', { path: this.envPath })
-      } else {
-        await writeFileAtomically(fullPath, updated)
-        this.logger.info('Token removed from file', { path: this.envPath })
-      }
-    } catch (error) {
-      this.logger.error(`Failed to delete token from ${this.envPath}`, {
-        error: error instanceof Error ? error.message : String(error),
-      })
-      throw error
-    }
   }
 }
 

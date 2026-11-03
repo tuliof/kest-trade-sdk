@@ -15,8 +15,6 @@ export {
   type AutoStorageConfig,
   AutoTokenStorage,
   createTokenStorage,
-  type EnvStorageConfig,
-  EnvTokenStorage,
   type FileStorageConfig,
   FileTokenStorage,
   type ITokenStorage,

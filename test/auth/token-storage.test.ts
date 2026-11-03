@@ -6,8 +6,6 @@ import { join } from 'node:path'
 import {
   AutoTokenStorage,
   createTokenStorage,
-  type EnvStorageConfig,
-  EnvTokenStorage,
   FileTokenStorage,
   type ITokenStorage,
   isTokenStorageInstance,
@@ -15,7 +13,6 @@ import {
   type MemoryStorageConfig,
   MemoryTokenStorage,
   type NodeKeyringModule,
-  parseEnvValue,
   resolveDefaultTokenFilePath,
   resolveTokenStorageKind,
   type SecretsBackend,
@@ -57,221 +54,6 @@ describe('MemoryTokenStorage', () => {
   test('should handle delete when no token is stored', async () => {
     await storage.delete()
     expect(await storage.get()).toBeNull()
-  })
-})
-
-describe('EnvTokenStorage', () => {
-  let tempDir: string
-  let envPath: string
-  let storage: EnvTokenStorage
-
-  beforeEach(async () => {
-    tempDir = join(tmpdir(), `kest-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
-    await mkdir(tempDir, { recursive: true })
-    envPath = join(tempDir, '.env')
-    storage = new EnvTokenStorage(envPath, 'QUESTRADE_REFRESH_TOKEN')
-  })
-
-  afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true })
-  })
-
-  test('should return null when .env file does not exist', async () => {
-    expect(await storage.get()).toBeNull()
-  })
-
-  test('should create .env file and store token', async () => {
-    await storage.set('my-refresh-token')
-
-    const retrieved = await storage.get()
-    expect(retrieved).toBe('my-refresh-token')
-  })
-
-  test('should update existing token in .env file', async () => {
-    await storage.set('first-token')
-    await storage.set('second-token')
-
-    expect(await storage.get()).toBe('second-token')
-  })
-
-  test('should preserve other env vars when updating token', async () => {
-    await mkdir(tempDir, { recursive: true })
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(
-      envPath,
-      'OTHER_VAR=hello\nQUESTRADE_REFRESH_TOKEN=old-token\nTHIRD_VAR=world\n',
-    )
-
-    await storage.set('new-token')
-
-    const content = await Bun.file(envPath).text()
-    expect(content).toContain('OTHER_VAR=hello')
-    expect(content).toContain('THIRD_VAR=world')
-    expect(content).toContain('QUESTRADE_REFRESH_TOKEN=new-token')
-    expect(content).not.toContain('old-token')
-  })
-
-  test('should append token to .env file if var does not exist', async () => {
-    await mkdir(tempDir, { recursive: true })
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(envPath, 'EXISTING_VAR=value\n')
-
-    await storage.set('appended-token')
-
-    const content = await Bun.file(envPath).text()
-    expect(content).toContain('EXISTING_VAR=value')
-    expect(content).toContain('QUESTRADE_REFRESH_TOKEN=appended-token')
-  })
-
-  test('should not touch variables that merely end with the target name', async () => {
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(envPath, 'OLD_QUESTRADE_REFRESH_TOKEN=keep\nQUESTRADE_REFRESH_TOKEN=abc\n')
-
-    await storage.set('new-token')
-
-    const content = await Bun.file(envPath).text()
-    expect(content).toBe('OLD_QUESTRADE_REFRESH_TOKEN=keep\nQUESTRADE_REFRESH_TOKEN=new-token\n')
-  })
-
-  test('should append when only a suffix-matching variable exists', async () => {
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(envPath, 'OLD_QUESTRADE_REFRESH_TOKEN=keep\n')
-
-    await storage.set('fresh')
-
-    const content = await Bun.file(envPath).text()
-    expect(content).toBe('OLD_QUESTRADE_REFRESH_TOKEN=keep\nQUESTRADE_REFRESH_TOKEN=fresh\n')
-  })
-
-  test('should store tokens containing replacement patterns literally', async () => {
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(envPath, 'QUESTRADE_REFRESH_TOKEN=abc\n')
-
-    await storage.set('new$&tok$1$$')
-
-    expect(await storage.get()).toBe('new$&tok$1$$')
-  })
-
-  test('should write the env file with owner-only permissions and leave no temp files', async () => {
-    const { readdir, stat } = await import('node:fs/promises')
-    await storage.set('first')
-    await storage.set('second')
-
-    const mode = (await stat(envPath)).mode & 0o777
-    expect(mode).toBe(0o600)
-    expect(await readdir(tempDir)).toEqual(['.env'])
-  })
-
-  test('should resolve relative env paths against the working directory', async () => {
-    const { readFile } = await import('node:fs/promises')
-    const relativeName = `.env.rel-${Math.random().toString(36).slice(2)}`
-    const relativeStorage = new EnvTokenStorage(relativeName)
-    try {
-      await relativeStorage.set('rel-token')
-      expect(await readFile(join(process.cwd(), relativeName), 'utf8')).toBe(
-        'QUESTRADE_REFRESH_TOKEN=rel-token\n',
-      )
-      expect(await relativeStorage.get()).toBe('rel-token')
-    } finally {
-      await relativeStorage.delete()
-    }
-  })
-
-  test('should not depend on Bun.file for env file access', async () => {
-    const originalFile = Bun.file
-    const bunRuntime = Bun as { file: unknown }
-    bunRuntime.file = () => {
-      throw new Error('Bun.file must not be used')
-    }
-    try {
-      await storage.set('portable')
-      expect(await storage.get()).toBe('portable')
-      await storage.delete()
-    } finally {
-      bunRuntime.file = originalFile
-    }
-  })
-
-  test('should strip surrounding double quotes from the stored value', async () => {
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(envPath, 'QUESTRADE_REFRESH_TOKEN="quoted-token"\n')
-    expect(await storage.get()).toBe('quoted-token')
-  })
-
-  test('should strip surrounding single quotes from the stored value', async () => {
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(envPath, "QUESTRADE_REFRESH_TOKEN='quoted-token'\n")
-    expect(await storage.get()).toBe('quoted-token')
-  })
-
-  test('should read values from CRLF files without a trailing carriage return', async () => {
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(envPath, 'OTHER=1\r\nQUESTRADE_REFRESH_TOKEN=crlf-token\r\n')
-    expect(await storage.get()).toBe('crlf-token')
-  })
-
-  test('should preserve CRLF line endings when updating the token', async () => {
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(envPath, 'OTHER=1\r\nQUESTRADE_REFRESH_TOKEN=old\r\n')
-    await storage.set('new')
-    expect(await Bun.file(envPath).text()).toBe('OTHER=1\r\nQUESTRADE_REFRESH_TOKEN=new\r\n')
-  })
-
-  test('should throw on get when the env path cannot be read', async () => {
-    const directoryStorage = new EnvTokenStorage(tempDir, 'QUESTRADE_REFRESH_TOKEN')
-
-    await expect(directoryStorage.get()).rejects.toThrow('Failed to read token')
-  })
-
-  test('should delete token from .env file', async () => {
-    await storage.set('my-refresh-token')
-    await storage.delete()
-
-    expect(await storage.get()).toBeNull()
-  })
-
-  test('should delete entire .env file when only token var remains', async () => {
-    await storage.set('my-refresh-token')
-    await storage.delete()
-
-    expect(await Bun.file(envPath).exists()).toBe(false)
-  })
-
-  test('should preserve other vars when deleting token', async () => {
-    await mkdir(tempDir, { recursive: true })
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(envPath, 'OTHER_VAR=hello\nQUESTRADE_REFRESH_TOKEN=my-token\n')
-
-    await storage.delete()
-
-    const content = await Bun.file(envPath).text()
-    expect(content).toContain('OTHER_VAR=hello')
-    expect(content).not.toContain('QUESTRADE_REFRESH_TOKEN')
-  })
-
-  test('should handle delete when .env file does not exist', async () => {
-    await storage.delete()
-    expect(await Bun.file(envPath).exists()).toBe(false)
-  })
-
-  test('should support custom var name', async () => {
-    const customStorage = new EnvTokenStorage(envPath, 'MY_CUSTOM_TOKEN')
-    await customStorage.set('custom-value')
-
-    expect(await customStorage.get()).toBe('custom-value')
-  })
-
-  test('should handle var names with regex metacharacters safely', async () => {
-    const customStorage = new EnvTokenStorage(envPath, 'TOKEN.VAR+NAME')
-    await customStorage.set('safe-value')
-
-    expect(await customStorage.get()).toBe('safe-value')
-
-    await customStorage.set('updated-value')
-    expect(await customStorage.get()).toBe('updated-value')
-
-    await customStorage.delete()
-    expect(await customStorage.get()).toBeNull()
   })
 })
 
@@ -619,7 +401,6 @@ describe('isTokenStorageInstance', () => {
 describe('resolveTokenStorageKind', () => {
   test('describes each built-in storage and custom ones', async () => {
     expect(await resolveTokenStorageKind(new MemoryTokenStorage())).toBe('memory')
-    expect(await resolveTokenStorageKind(new EnvTokenStorage())).toBe('env')
     expect(await resolveTokenStorageKind(new FileTokenStorage('/tmp/x'))).toBe('file')
     expect(await resolveTokenStorageKind(new SecureTokenStorage())).toBe('secure')
     expect(
@@ -636,11 +417,6 @@ describe('createTokenStorage', () => {
   test('should create MemoryTokenStorage from string shorthand', () => {
     const storage = createTokenStorage('memory')
     expect(storage).toBeInstanceOf(MemoryTokenStorage)
-  })
-
-  test('should create EnvTokenStorage from string shorthand', () => {
-    const storage = createTokenStorage('env')
-    expect(storage).toBeInstanceOf(EnvTokenStorage)
   })
 
   test('should create SecureTokenStorage from string shorthand', () => {
@@ -663,20 +439,12 @@ describe('createTokenStorage', () => {
 
   test('should create from TokenStorageType constants', () => {
     expect(createTokenStorage(TokenStorageType.MEMORY)).toBeInstanceOf(MemoryTokenStorage)
-    expect(createTokenStorage(TokenStorageType.ENV)).toBeInstanceOf(EnvTokenStorage)
     expect(createTokenStorage(TokenStorageType.SECURE)).toBeInstanceOf(SecureTokenStorage)
   })
 
   test('should create from detailed config objects', () => {
     const memoryStorage = createTokenStorage({ type: 'memory' } as MemoryStorageConfig)
     expect(memoryStorage).toBeInstanceOf(MemoryTokenStorage)
-
-    const envStorage = createTokenStorage({
-      type: 'env',
-      envPath: '.env.test',
-      varName: 'TEST_TOKEN',
-    } as EnvStorageConfig)
-    expect(envStorage).toBeInstanceOf(EnvTokenStorage)
 
     const secureStorage = createTokenStorage({
       type: 'secure',
@@ -737,10 +505,6 @@ describe('TokenStorageError', () => {
 describe('ITokenStorage interface compliance', () => {
   const storages: Array<{ name: string; storage: ITokenStorage }> = [
     { name: 'MemoryTokenStorage', storage: new MemoryTokenStorage() },
-    {
-      name: 'EnvTokenStorage',
-      storage: new EnvTokenStorage(join(tmpdir(), `kest-iface-${Date.now()}`)),
-    },
   ]
 
   for (const { name, storage } of storages) {
@@ -754,20 +518,4 @@ describe('ITokenStorage interface compliance', () => {
       expect(await storage.get()).toBeNull()
     })
   }
-})
-
-describe('parseEnvValue', () => {
-  test('should leave unquoted values untouched', () => {
-    expect(parseEnvValue('abc')).toBe('abc')
-  })
-
-  test('should not strip mismatched or lone quotes', () => {
-    expect(parseEnvValue('"abc')).toBe('"abc')
-    expect(parseEnvValue('"abc\'')).toBe('"abc\'')
-    expect(parseEnvValue('"')).toBe('"')
-  })
-
-  test('should strip a trailing carriage return before unquoting', () => {
-    expect(parseEnvValue('"abc"\r')).toBe('abc')
-  })
 })

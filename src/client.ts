@@ -105,7 +105,6 @@ export interface QuestradeClientConfig {
    * - 'secure': OS keychain only (Keychain, Credential Manager, Secret Service); fails loud
    *   when it is unusable. Uses Bun.secrets under Bun and @napi-rs/keyring under Node.js.
    * - 'file': user-only file in the per-user config directory
-   * - 'env': .env file in the project directory (plaintext)
    * - 'memory': in-memory only. Questrade rotates the token on every refresh, so after a
    *   restart the token is lost and a new one must be generated in the Questrade API Centre.
    * - A config object for any of the above, or your own ITokenStorage (e.g. a secrets

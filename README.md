@@ -75,7 +75,7 @@ Pick whichever fits your environment. They all end with the token in the default
 
 The CLI also reads the token from stdin (`echo "$TOKEN" | npx kest-trade-sdk login`) and has
 `status` (where the token is stored, without printing it) and `logout`. Pass
-`--storage auto|secure|file|env` to match a non-default `tokenStorage` in your application.
+`--storage auto|secure|file` to match a non-default `tokenStorage` in your application.
 
 ## Token storage
 
@@ -90,7 +90,6 @@ written to your project. When the file is chosen the SDK logs a `[WARN]`, and
 | `'auto'` (default) | OS keychain, else a user-only file in the config directory |
 | `'secure'` | OS keychain only; fails loud if unusable |
 | `'file'` | User-only file in the config directory (or `{ type: 'file', filePath }`) |
-| `'env'` | `.env` file in the project directory, plaintext |
 | `'memory'` | Process memory; lost on restart (a new token must then be generated) |
 | your `ITokenStorage` | Anywhere, e.g. a secrets manager (recommended for production servers) |
 
