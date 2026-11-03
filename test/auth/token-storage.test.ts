@@ -1,23 +1,28 @@
 // SPDX-License-Identifier: BSD-3-Clause
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  AutoTokenStorage,
   createTokenStorage,
   type EnvStorageConfig,
   EnvTokenStorage,
+  FileTokenStorage,
   type ITokenStorage,
+  loadKeychainBackend,
   type MemoryStorageConfig,
   MemoryTokenStorage,
+  type NodeKeyringModule,
   parseEnvValue,
-  resolveSecretsBackend,
+  resolveDefaultTokenFilePath,
   type SecretsBackend,
   type SecureStorageConfig,
   SecureTokenStorage,
   TokenStorageError,
   TokenStorageType,
 } from '@/auth/token-storage'
+import { type Logger, SilentLogger } from '@/logger'
 
 describe('MemoryTokenStorage', () => {
   let storage: MemoryTokenStorage
@@ -285,18 +290,56 @@ function createFakeSecrets() {
   return { backend, entries }
 }
 
-describe('resolveSecretsBackend', () => {
-  test('should throw a descriptive error when the Bun runtime is absent', () => {
-    expect(() => resolveSecretsBackend(undefined)).toThrow('requires the Bun runtime')
-  })
+function createFakeNodeKeyring(): NodeKeyringModule {
+  const { backend } = createFakeSecrets()
+  class AsyncEntry {
+    constructor(
+      private readonly service: string,
+      private readonly name: string,
+    ) {}
+    getPassword() {
+      return backend.get({ service: this.service, name: this.name })
+    }
+    setPassword(value: string) {
+      return backend.set({ service: this.service, name: this.name, value })
+    }
+    deletePassword() {
+      return backend.delete({ service: this.service, name: this.name })
+    }
+  }
+  return { AsyncEntry }
+}
 
-  test('should throw a descriptive error when Bun.secrets is missing', () => {
-    expect(() => resolveSecretsBackend({})).toThrow('requires the Bun runtime')
-  })
-
-  test('should return the secrets backend of the Bun runtime', () => {
+describe('loadKeychainBackend', () => {
+  test('uses Bun.secrets when running under Bun', async () => {
     const { backend } = createFakeSecrets()
-    expect(resolveSecretsBackend({ secrets: backend })).toBe(backend)
+    const importNodeKeyring = async () => createFakeNodeKeyring()
+
+    expect(await loadKeychainBackend({ bun: { secrets: backend }, importNodeKeyring })).toBe(
+      backend,
+    )
+  })
+
+  test('adapts @napi-rs/keyring when Bun.secrets is absent', async () => {
+    const keychain = await loadKeychainBackend({
+      importNodeKeyring: async () => createFakeNodeKeyring(),
+    })
+
+    await keychain.set({ service: 'svc', name: 'tok', value: 'node-token' })
+
+    expect(await keychain.get({ service: 'svc', name: 'tok' })).toBe('node-token')
+    expect(await keychain.delete({ service: 'svc', name: 'tok' })).toBe(true)
+    expect(await keychain.get({ service: 'svc', name: 'tok' })).toBeNull()
+  })
+
+  test('explains how to install the keyring when it cannot be loaded', async () => {
+    const importNodeKeyring = async (): Promise<NodeKeyringModule> => {
+      throw new Error('Cannot find module')
+    }
+
+    await expect(loadKeychainBackend({ importNodeKeyring })).rejects.toThrow(
+      'npm install @napi-rs/keyring',
+    )
   })
 })
 
@@ -362,6 +405,193 @@ describe('SecureTokenStorage', () => {
     }
     const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
     await expect(storage.delete()).rejects.toThrow('keychain locked')
+  })
+})
+
+describe('SecureTokenStorage.probe', () => {
+  test('reports a working keychain as usable and leaves no sentinel behind', async () => {
+    const { backend, entries } = createFakeSecrets()
+    const storage = new SecureTokenStorage('tok', 'svc', undefined, backend)
+
+    expect(await storage.probe()).toEqual({ usable: true })
+    expect(entries.size).toBe(0)
+  })
+
+  test('reports the reason when the keychain fails', async () => {
+    const { backend } = createFakeSecrets()
+    backend.set = async () => {
+      throw new Error('libsecret not available')
+    }
+    const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
+
+    expect(await storage.probe()).toEqual({ usable: false, reason: 'libsecret not available' })
+  })
+})
+
+describe('resolveDefaultTokenFilePath', () => {
+  test('uses XDG_CONFIG_HOME on Linux when set', () => {
+    expect(resolveDefaultTokenFilePath('linux', { XDG_CONFIG_HOME: '/xdg' }, '/home/u')).toBe(
+      '/xdg/kest-trade-sdk/refresh-token',
+    )
+  })
+
+  test('defaults to ~/.config on Linux', () => {
+    expect(resolveDefaultTokenFilePath('linux', {}, '/home/u')).toBe(
+      '/home/u/.config/kest-trade-sdk/refresh-token',
+    )
+  })
+
+  test('uses Application Support on macOS', () => {
+    expect(resolveDefaultTokenFilePath('darwin', {}, '/Users/u')).toBe(
+      '/Users/u/Library/Application Support/kest-trade-sdk/refresh-token',
+    )
+  })
+
+  test('uses APPDATA on Windows', () => {
+    expect(
+      resolveDefaultTokenFilePath(
+        'win32',
+        { APPDATA: 'C:\\Users\\u\\AppData\\Roaming' },
+        'C:\\Users\\u',
+      ),
+    ).toBe('C:\\Users\\u\\AppData\\Roaming\\kest-trade-sdk\\refresh-token')
+  })
+
+  test('fails loud on Windows without APPDATA', () => {
+    expect(() => resolveDefaultTokenFilePath('win32', {}, 'C:\\Users\\u')).toThrow('APPDATA')
+  })
+})
+
+describe('FileTokenStorage', () => {
+  let directory: string
+  let filePath: string
+
+  beforeEach(() => {
+    directory = join(tmpdir(), `kest-file-storage-${Date.now()}-${Math.random()}`)
+    filePath = join(directory, 'nested', 'refresh-token')
+  })
+
+  afterEach(async () => {
+    await rm(directory, { recursive: true, force: true })
+  })
+
+  test('returns null when the file does not exist', async () => {
+    expect(await new FileTokenStorage(filePath).get()).toBeNull()
+  })
+
+  test('creates a user-only directory and file on set', async () => {
+    const storage = new FileTokenStorage(filePath)
+
+    await storage.set('file-token')
+
+    expect(await storage.get()).toBe('file-token')
+    expect((await stat(filePath)).mode & 0o777).toBe(0o600)
+    expect((await stat(join(directory, 'nested'))).mode & 0o777).toBe(0o700)
+  })
+
+  test('overwrites the previous token', async () => {
+    const storage = new FileTokenStorage(filePath)
+    await storage.set('first')
+
+    await storage.set('second')
+
+    expect(await readFile(filePath, 'utf8')).toBe('second\n')
+  })
+
+  test('delete removes the file and tolerates a missing one', async () => {
+    const storage = new FileTokenStorage(filePath)
+    await storage.set('file-token')
+
+    await storage.delete()
+    await storage.delete()
+
+    expect(await storage.get()).toBeNull()
+  })
+
+  test('wraps write failures in TokenStorageError carrying the token', async () => {
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'nested'), 'not a directory')
+    const storage = new FileTokenStorage(filePath)
+
+    const error = await storage.set('lost-token').catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(TokenStorageError)
+    expect((error as TokenStorageError).refreshToken).toBe('lost-token')
+  })
+})
+
+describe('AutoTokenStorage', () => {
+  let directory: string
+
+  beforeEach(() => {
+    directory = join(tmpdir(), `kest-auto-storage-${Date.now()}-${Math.random()}`)
+  })
+
+  afterEach(async () => {
+    await rm(directory, { recursive: true, force: true })
+  })
+
+  test('uses the keychain when the probe succeeds', async () => {
+    const { backend, entries } = createFakeSecrets()
+    const storage = new AutoTokenStorage(
+      new SecureTokenStorage('tok', 'svc', undefined, backend),
+      new FileTokenStorage(join(directory, 'refresh-token')),
+      new SilentLogger(),
+    )
+
+    await storage.set('keychain-token')
+
+    expect(await storage.resolveBackendKind()).toBe('secure')
+    expect(entries.get('svc/tok')).toBe('keychain-token')
+  })
+
+  test('falls back to the user-only file and warns when the keychain is unusable', async () => {
+    const { backend } = createFakeSecrets()
+    backend.set = async () => {
+      throw new Error('libsecret not available')
+    }
+    const warnings: unknown[] = []
+    const logger: Logger = {
+      debug() {},
+      info() {},
+      warn: (message, context) => {
+        warnings.push([message, context])
+      },
+      error() {},
+    }
+    const filePath = join(directory, 'refresh-token')
+    const storage = new AutoTokenStorage(
+      new SecureTokenStorage('tok', 'svc', undefined, backend),
+      new FileTokenStorage(filePath),
+      logger,
+    )
+
+    await storage.set('file-token')
+
+    expect(await storage.resolveBackendKind()).toBe('file')
+    expect(await readFile(filePath, 'utf8')).toBe('file-token\n')
+    expect(JSON.stringify(warnings)).toContain('libsecret not available')
+  })
+
+  test('probes the keychain only once', async () => {
+    const { backend } = createFakeSecrets()
+    let probes = 0
+    const originalSet = backend.set
+    backend.set = async (options) => {
+      if (options.name.endsWith('.probe')) probes++
+      return originalSet(options)
+    }
+    const storage = new AutoTokenStorage(
+      new SecureTokenStorage('tok', 'svc', undefined, backend),
+      new FileTokenStorage(join(directory, 'refresh-token')),
+      new SilentLogger(),
+    )
+
+    await storage.set('a')
+    await storage.get()
+    await storage.resolveBackendKind()
+
+    expect(probes).toBe(1)
   })
 })
 

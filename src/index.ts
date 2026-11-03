@@ -11,13 +11,22 @@ export { AccountsClient } from './accounts/accounts-client'
 export { AuthClient } from './auth/auth-client'
 // Token Storage
 export {
+  type AutoStorageBackendKind,
+  type AutoStorageConfig,
+  AutoTokenStorage,
   createTokenStorage,
   type EnvStorageConfig,
   EnvTokenStorage,
+  type FileStorageConfig,
+  FileTokenStorage,
   type ITokenStorage,
+  type KeychainProbeResult,
+  type KeychainRuntime,
+  loadKeychainBackend,
   type MemoryStorageConfig,
   MemoryTokenStorage,
-  resolveSecretsBackend,
+  type NodeKeyringModule,
+  resolveDefaultTokenFilePath,
   type SecretsBackend,
   type SecureStorageConfig,
   SecureTokenStorage,
