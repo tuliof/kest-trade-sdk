@@ -282,6 +282,53 @@ describe('QuestradeClient', () => {
     })
   })
 
+  describe('credential updates across refreshes', () => {
+    const secondTokenResponse = (): TokenResponse => ({
+      access_token: 'second_access_token',
+      refresh_token: 'second_refresh_token',
+      api_server: 'https://api02.test.questrade.com/',
+      expires_in: 1800,
+      token_type: 'Bearer',
+    })
+
+    test('should keep previously obtained sub-clients working with the new access token', async () => {
+      const responses = [mockTokenResponse, secondTokenResponse()]
+      let refreshCalls = 0
+      AuthClient.prototype.refreshToken = mock(
+        async () => responses[refreshCalls++] as TokenResponse,
+      )
+      const requests: Array<{ url: string; authorization: string | undefined }> = []
+      globalThis.fetch = mock(async (url: string, options?: RequestInit) => {
+        const headers = options?.headers as Record<string, string>
+        requests.push({ url, authorization: headers.Authorization })
+        return new Response(JSON.stringify({ accounts: [], userId: 1 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as unknown as typeof fetch
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+      })
+      await client.initialize()
+      const heldAccounts = client.accounts
+      const heldMarket = client.market
+
+      await client.refreshAccessToken()
+      await heldAccounts.getAccounts()
+
+      expect(requests).toEqual([
+        {
+          url: 'https://api02.test.questrade.com/v1/accounts',
+          authorization: 'Bearer second_access_token',
+        },
+      ])
+      expect(client.accounts).toBe(heldAccounts)
+      expect(client.market).toBe(heldMarket)
+    })
+  })
+
   describe('automatic token refresh', () => {
     test('should schedule token refresh when autoRefresh is enabled', async () => {
       const client = new QuestradeClient({

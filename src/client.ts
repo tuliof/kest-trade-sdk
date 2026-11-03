@@ -242,14 +242,7 @@ export class QuestradeClient {
   async initialize(): Promise<void> {
     // Use existing access token if provided
     if (this.config.accessToken && this.config.apiServer) {
-      this.httpClient = new HttpClient(
-        this.config.apiServer,
-        this.config.accessToken,
-        this.logger,
-        this.config.httpLogOptions,
-        this.config.requestTimeoutMs,
-      )
-      this.initializeClients()
+      this.applyCredentials(this.config.apiServer, this.config.accessToken)
       return
     }
 
@@ -310,16 +303,9 @@ export class QuestradeClient {
     // Update refresh token for next use (CRITICAL: tokens are rotated)
     this.config.refreshToken = tokenResponse.refresh_token
 
-    // Create or update HTTP client first, so the client remains usable
+    // Update credentials first, so the client remains usable
     // even if token storage fails
-    this.httpClient = new HttpClient(
-      tokenResponse.api_server,
-      tokenResponse.access_token,
-      this.logger,
-      this.config.httpLogOptions,
-      this.config.requestTimeoutMs,
-    )
-    this.initializeClients()
+    this.applyCredentials(tokenResponse.api_server, tokenResponse.access_token)
 
     // Schedule auto-refresh if enabled
     if (this.config.autoRefresh) {
@@ -392,13 +378,22 @@ export class QuestradeClient {
   }
 
   /**
-   * Initialize sub-clients (lazy initialization)
+   * Create the HttpClient and sub-clients on first use; afterwards update the
+   * existing HttpClient in place so sub-clients held by callers never go stale.
    */
-  private initializeClients(): void {
-    if (!this.httpClient) {
-      throw new Error('HttpClient not initialized')
+  private applyCredentials(apiServer: string, accessToken: string): void {
+    if (this.httpClient) {
+      this.httpClient.updateCredentials(apiServer, accessToken)
+      return
     }
 
+    this.httpClient = new HttpClient(
+      apiServer,
+      accessToken,
+      this.logger,
+      this.config.httpLogOptions,
+      this.config.requestTimeoutMs,
+    )
     this._accounts = new AccountsClient(this.httpClient)
     this._market = new MarketClient(this.httpClient)
   }

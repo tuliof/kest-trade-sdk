@@ -72,11 +72,26 @@ export class HttpClient {
     logOptions: HttpLogOptions = {},
     requestTimeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
   ) {
-    this.apiServer = apiServer.endsWith('/') ? apiServer.slice(0, -1) : apiServer
+    this.apiServer = HttpClient.normalizeApiServer(apiServer)
     this.accessToken = accessToken
     this.logger = logger
     this.logOptions = logOptions
     this.requestTimeoutMs = assertValidRequestTimeout(requestTimeoutMs)
+  }
+
+  private static normalizeApiServer(apiServer: string): string {
+    return apiServer.endsWith('/') ? apiServer.slice(0, -1) : apiServer
+  }
+
+  /**
+   * Replace the API server and access token together. Questrade returns both
+   * on every token refresh, and the server can change between refreshes.
+   * @param apiServer - The API server URL
+   * @param accessToken - The new Bearer access token
+   */
+  public updateCredentials(apiServer: string, accessToken: string): void {
+    this.apiServer = HttpClient.normalizeApiServer(apiServer)
+    this.accessToken = accessToken
   }
 
   /**
