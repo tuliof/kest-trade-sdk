@@ -4,8 +4,11 @@ import { AuthClient } from '@/auth/auth-client'
 import {
   createTokenStorage,
   type ITokenStorage,
+  isTokenStorageInstance,
+  resolveTokenStorageKind,
   type TokenStorageConfig,
   TokenStorageError,
+  type TokenStorageKind,
   TokenStorageType,
 } from '@/auth/token-storage'
 import { HttpClient } from '@/http/http-client'
@@ -27,16 +30,65 @@ function isRetryableRefreshError(error: unknown): boolean {
   return !(error instanceof AuthenticationError || error instanceof TokenStorageError)
 }
 
+const SEED_REFRESH_TOKEN_ENV_VAR = 'QUESTRADE_REFRESH_TOKEN'
+
+type RefreshTokenSource = 'storage' | 'seed'
+
+interface RefreshTokenCandidate {
+  source: RefreshTokenSource
+  token: string
+}
+
+function readSeedRefreshTokenFromEnv(): string {
+  if (typeof process === 'undefined') return ''
+  return process.env[SEED_REFRESH_TOKEN_ENV_VAR]?.trim() ?? ''
+}
+
+/**
+ * The stored token is the newest one (rotated on every refresh), so it goes
+ * first; the seed only bootstraps an empty storage or recovers a rejected token.
+ */
+export function listRefreshTokenCandidates(
+  storedToken: string | null,
+  seedToken: string,
+): RefreshTokenCandidate[] {
+  const candidates: RefreshTokenCandidate[] = []
+  if (storedToken) candidates.push({ source: 'storage', token: storedToken })
+  if (seedToken && seedToken !== storedToken) candidates.push({ source: 'seed', token: seedToken })
+  return candidates
+}
+
+function describeRejectedTokens(
+  candidates: RefreshTokenCandidate[],
+  lastError: AuthenticationError,
+): AuthenticationError {
+  const sources = candidates.map((candidate) => candidate.source).join(' and ')
+  // A rejected seed with empty storage is the signature of storage that did not
+  // survive a restart, typically a container recreated without a volume
+  const storageWasEmpty = candidates.every((candidate) => candidate.source === 'seed')
+  const persistenceHint = storageWasEmpty
+    ? ' The token storage was empty, so the rotated token from a previous run was lost. If you run in a container, persist the token storage with a volume (see TOKEN_MANAGEMENT.md, "Containers").'
+    : ''
+  return new AuthenticationError(
+    `Questrade rejected the refresh token from ${sources}. Refresh tokens are single-use.${persistenceHint} Generate a new one in the Questrade API Centre, then run \`kest-trade-sdk login\` or set ${SEED_REFRESH_TOKEN_ENV_VAR}.`,
+    lastError.apiErrorCode,
+    { cause: lastError },
+  )
+}
+
 /**
  * Configuration options for QuestradeClient
  */
 export interface QuestradeClientConfig {
   /**
-   * Refresh token for authentication
-   * Either refreshToken or (accessToken + apiServer) must be provided
+   * Seed refresh token, used only to bootstrap or recover the stored token.
+   * Defaults to the QUESTRADE_REFRESH_TOKEN environment variable.
    *
-   * When using tokenStorage: 'secure', this is only needed on first initialization.
-   * Subsequent runs will retrieve the token from secure storage automatically.
+   * Questrade refresh tokens are single-use, so the token in storage (rotated on
+   * every refresh) always takes precedence. The seed is tried when storage is empty,
+   * or when the stored token is rejected (e.g. after generating a new token in the
+   * Questrade API Centre). A seed that was already consumed simply fails, so it is
+   * safe to leave it configured.
    */
   refreshToken?: string
 
@@ -52,32 +104,32 @@ export interface QuestradeClientConfig {
   apiServer?: string
 
   /**
-   * Token storage strategy
-   * - 'secure': Use OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
-   * - 'env': Save to .env file (default for backward compatibility)
-   * - 'memory': In-memory only (not persistent, useful for testing)
-   * - Custom config: Provide SecureStorageConfig or EnvStorageConfig for more control
+   * Where the rotated refresh token is kept between runs.
+   * - 'auto' (default): OS keychain when usable, otherwise a user-only file (0600) in the
+   *   per-user config directory (headless servers, Docker, CI). Logged at WARN when the
+   *   file is chosen; check with resolveTokenStorageKind().
+   * - 'secure': OS keychain only (Keychain, Credential Manager, Secret Service); fails loud
+   *   when it is unusable. Uses Bun.secrets under Bun and @napi-rs/keyring under Node.js.
+   * - 'file': user-only file in the per-user config directory
+   * - 'memory': in-memory only. Questrade rotates the token on every refresh, so after a
+   *   restart the token is lost and a new one must be generated in the Questrade API Centre.
+   * - A config object for any of the above, or your own ITokenStorage (e.g. a secrets
+   *   manager such as AWS Secrets Manager or Vault, recommended for production servers)
    *
-   * @default TokenStorageType.ENV
+   * @default TokenStorageType.AUTO
    *
-   * @example Using secure storage with constants
-   * ```typescript
-   * const { TokenStorageType } = require('kest-trade-sdk')
-   * const client = new QuestradeClient({
-   *   tokenStorage: TokenStorageType.SECURE,
-   *   refreshToken: 'initial_token', // Only needed first time
-   * })
-   * ```
-   *
-   * @example Using .env file (backward compatible)
+   * @example Custom storage
    * ```typescript
    * const client = new QuestradeClient({
-   *   tokenStorage: TokenStorageType.ENV,
-   *   refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
+   *   tokenStorage: {
+   *     get: () => vault.read('questrade/refresh-token'),
+   *     set: (token) => vault.write('questrade/refresh-token', token),
+   *     delete: () => vault.delete('questrade/refresh-token'),
+   *   },
    * })
    * ```
    */
-  tokenStorage?: TokenStorageConfig
+  tokenStorage?: TokenStorageConfig | ITokenStorage
 
   /**
    * Auto-refresh token before expiry (default: true)
@@ -179,13 +231,11 @@ export interface QuestradeClientConfig {
  *
  * @example
  * ```typescript
- * import { QuestradeClient, TokenStorageType } from 'kest-trade-sdk'
+ * import { QuestradeClient } from 'kest-trade-sdk'
  *
- * // Initialize with refresh token (saves to secure storage automatically)
- * const client = new QuestradeClient({
- *   tokenStorage: TokenStorageType.SECURE,
- *   refreshToken: 'your_refresh_token'
- * })
+ * // First run: `kest-trade-sdk login` or QUESTRADE_REFRESH_TOKEN seeds the token;
+ * // afterwards the rotated token is read from the default storage
+ * const client = new QuestradeClient()
  * await client.initialize()
  *
  * // Get accounts
@@ -203,11 +253,11 @@ export class QuestradeClient {
   private logger: Logger
   private config: {
     refreshToken: string
+    seedRefreshToken: string
     accessToken: string
     apiServer: string
     autoRefresh: boolean
     refreshBuffer: number
-    tokenStorage: TokenStorageConfig
     httpLogOptions: HttpLogOptions
     requestTimeoutMs: number
     autoRefreshRetryDelayMs: number
@@ -219,15 +269,10 @@ export class QuestradeClient {
   private refreshTimerId?: Timer
   private inFlightRefresh?: Promise<TokenResponse>
 
-  constructor(config: QuestradeClientConfig) {
-    // Validate configuration
-    if (
-      !config.refreshToken &&
-      (!config.accessToken || !config.apiServer) &&
-      !config.tokenStorage
-    ) {
+  constructor(config: QuestradeClientConfig = {}) {
+    if (Boolean(config.accessToken) !== Boolean(config.apiServer)) {
       throw new Error(
-        'Either refreshToken, (accessToken + apiServer), or tokenStorage must be provided',
+        'accessToken and apiServer must be provided together. Omit both to authenticate with a refresh token instead.',
       )
     }
 
@@ -237,14 +282,15 @@ export class QuestradeClient {
         ? createLogger(config.logger)
         : (config.logger ?? new SilentLogger())
 
-    // Set defaults
+    const seedRefreshToken = config.refreshToken || readSeedRefreshTokenFromEnv()
+
     this.config = {
-      refreshToken: config.refreshToken || '',
+      refreshToken: seedRefreshToken,
+      seedRefreshToken,
       accessToken: config.accessToken || '',
       apiServer: config.apiServer || '',
       autoRefresh: config.autoRefresh ?? true,
       refreshBuffer: config.refreshBuffer ?? 60,
-      tokenStorage: config.tokenStorage ?? TokenStorageType.ENV,
       httpLogOptions: {
         logRequestHeaders: true,
         logRequestBody: true,
@@ -262,7 +308,9 @@ export class QuestradeClient {
     }
 
     // Create token storage instance
-    this.tokenStorage = createTokenStorage(this.config.tokenStorage, this.logger)
+    this.tokenStorage = isTokenStorageInstance(config.tokenStorage)
+      ? config.tokenStorage
+      : createTokenStorage(config.tokenStorage ?? TokenStorageType.AUTO, this.logger)
 
     this.authClient = new AuthClient(this.config.requestTimeoutMs)
   }
@@ -271,30 +319,43 @@ export class QuestradeClient {
    * Initialize the client and authenticate
    * Must be called before using any API methods
    *
-   * When using tokenStorage: 'secure', the initial refreshToken is only needed on first
-   * initialization. Subsequent runs will automatically retrieve the token from secure storage.
+   * The stored refresh token is tried first, then the seed token (config
+   * `refreshToken` or QUESTRADE_REFRESH_TOKEN) if storage is empty or the stored
+   * token is rejected.
+   *
+   * @throws Error if no refresh token is available anywhere
+   * @throws AuthenticationError if every available refresh token is rejected
    */
   async initialize(): Promise<void> {
-    // Use existing access token if provided
     if (this.config.accessToken && this.config.apiServer) {
       this.applyCredentials(this.config.apiServer, this.config.accessToken)
       return
     }
 
-    // Load refresh token from config or storage
-    let refreshToken: string | null = this.config.refreshToken || null
-    if (!refreshToken) {
-      refreshToken = await this.tokenStorage.get()
-    }
-
-    if (!refreshToken) {
+    const candidates = listRefreshTokenCandidates(
+      await this.tokenStorage.get(),
+      this.config.seedRefreshToken,
+    )
+    if (candidates.length === 0) {
       throw new Error(
-        'No refresh token available. Provide refreshToken in config, initialize with a valid token first, or ensure tokenStorage has a saved token.',
+        `No refresh token available. Generate one in the Questrade API Centre, then run \`kest-trade-sdk login\` or set ${SEED_REFRESH_TOKEN_ENV_VAR}.`,
       )
     }
 
-    this.config.refreshToken = refreshToken
-    await this.refreshAccessToken()
+    for (const [index, candidate] of candidates.entries()) {
+      const isLastCandidate = index === candidates.length - 1
+      try {
+        this.config.refreshToken = candidate.token
+        await this.refreshAccessToken()
+        return
+      } catch (error) {
+        if (!(error instanceof AuthenticationError)) throw error
+        if (isLastCandidate) throw describeRejectedTokens(candidates, error)
+        this.logger.warn('Refresh token rejected, trying the next source', {
+          source: candidate.source,
+        })
+      }
+    }
   }
 
   /**
@@ -526,6 +587,14 @@ export class QuestradeClient {
   public setHttpLogOptions(options: HttpLogOptions): void {
     this.config.httpLogOptions = options
     this.httpClient?.setLogOptions(options)
+  }
+
+  /**
+   * Where the refresh token is kept. For the default 'auto' storage this
+   * probes the OS keychain (once) and reports 'secure' or 'file'.
+   */
+  resolveTokenStorageKind(): Promise<TokenStorageKind> {
+    return resolveTokenStorageKind(this.tokenStorage)
   }
 
   /**

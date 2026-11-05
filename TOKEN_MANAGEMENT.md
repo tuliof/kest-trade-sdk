@@ -47,77 +47,158 @@ Step 3: Old token ABC123 is now INVALID ❌
 
 ### Pluggable Token Storage
 
-The SDK manages token rotation automatically. Configure a storage backend
-with the `tokenStorage` option:
+The SDK manages token rotation automatically. With no configuration it uses the
+`'auto'` storage:
 
 ```typescript
-import { QuestradeClient, TokenStorageType } from 'kest-trade-sdk'
+import { QuestradeClient } from 'kest-trade-sdk'
 
-const client = new QuestradeClient({
-  refreshToken: process.env.QUESTRADE_REFRESH_TOKEN,
-  tokenStorage: TokenStorageType.SECURE, // default: TokenStorageType.ENV
-})
-
+const client = new QuestradeClient()
 await client.initialize()
+```
+
+### Where the first token comes from
+
+Questrade refresh tokens are single-use, so the token in storage is always the newest.
+`initialize()` resolves the token in this order:
+
+1. The token in `tokenStorage`.
+2. The seed: `refreshToken` from config, or the `QUESTRADE_REFRESH_TOKEN` environment
+   variable. Used when storage is empty, or when the stored token is rejected (for example
+   after generating a new token in the Questrade API Centre).
+
+A seed that was already consumed simply fails, so it is safe to leave it configured.
+Errors other than a rejected token (network, timeout) do not fall through to the seed.
+
+To store the first token without putting it in code, a file or shell history, run:
+
+```bash
+bunx kest-trade-sdk login        # or: npx kest-trade-sdk login
 ```
 
 ### Storage Backends
 
-#### Secure Storage (recommended for production)
+#### Auto (default)
 
-Uses OS-native credential storage via `Bun.secrets`:
+Uses the OS keychain when a real probe (write, read back, delete a sentinel entry)
+succeeds. Otherwise it uses a user-only file in the per-user config directory:
+
+- Linux: `$XDG_CONFIG_HOME/kest-trade-sdk/refresh-token` (default `~/.config`)
+- macOS: `~/Library/Application Support/kest-trade-sdk/refresh-token`
+- Windows: `%APPDATA%\kest-trade-sdk\refresh-token`
+
+The directory is created with mode `0700` and the file with `0600`, written atomically.
+This is the same model as the `gh`, `aws` and `gcloud` CLIs. Headless servers, Docker and
+CI usually have no Linux Secret Service, so they resolve to the file. The choice is logged
+at `[WARN]` and observable:
+
+```typescript
+await client.resolveTokenStorageKind() // 'secure' | 'file'
+```
+
+```typescript
+tokenStorage: { type: 'auto', service: 'kest-trade-sdk-paper', filePath: '/run/secrets/qt' }
+```
+
+#### Secure (OS keychain only)
+
 - macOS: Keychain
 - Windows: Credential Manager
-- Linux: Secret Service API
+- Linux: Secret Service API (needs libsecret and a running, unlocked keyring)
+
+Under Bun it uses `Bun.secrets`; under Node.js the optional dependency
+`@napi-rs/keyring`. Unlike `'auto'`, it throws when the keychain is unusable.
 
 ```typescript
-// String shorthand
 tokenStorage: 'secure'
-
-// Or with custom credential name
-tokenStorage: { type: 'secure', name: 'my-app-refresh-token' }
+tokenStorage: { type: 'secure', name: 'my-app-refresh-token', service: 'my-app' }
 ```
 
-**Subsequent runs**: Once a token is saved, you can initialize without
-providing a `refreshToken` — the SDK loads it from secure storage
-automatically:
+#### File
 
 ```typescript
-const client = new QuestradeClient({
-  tokenStorage: 'secure',
-})
-await client.initialize() // Loads token from keychain
+tokenStorage: 'file'
+tokenStorage: { type: 'file', filePath: '/var/lib/my-bot/questrade-token' }
 ```
 
-#### Env Storage (default, backward compatible)
+#### Memory (for testing)
 
-Saves the refresh token to a `.env` file:
-
-```typescript
-// Default: writes QUESTRADE_REFRESH_TOKEN to .env
-tokenStorage: 'env'
-
-// Or with custom path and variable name
-tokenStorage: { type: 'env', envPath: '.env.prod', varName: 'MY_TOKEN' }
-```
-
-#### Memory Storage (for testing)
-
-Stores the token in memory only — not persistent across restarts:
+Stores the token in memory only. Because Questrade rotates the token on every refresh,
+the token is lost when the process exits and a new one must be generated in the
+Questrade API Centre. Use `onTokenRefresh` or a persistent storage outside tests.
 
 ```typescript
 tokenStorage: 'memory'
 ```
 
+#### Custom storage
+
+Pass any object implementing `ITokenStorage`. This is the recommended setup for
+production servers, backed by a secrets manager:
+
+```typescript
+import { SecretsManager } from '@aws-sdk/client-secrets-manager'
+
+const secrets = new SecretsManager({})
+const SecretId = 'questrade/refresh-token'
+
+const client = new QuestradeClient({
+  tokenStorage: {
+    async get() {
+      const { SecretString } = await secrets.getSecretValue({ SecretId })
+      return SecretString || null
+    },
+    async set(token) {
+      await secrets.putSecretValue({ SecretId, SecretString: token })
+    },
+    async delete() {
+      await secrets.putSecretValue({ SecretId, SecretString: '' })
+    },
+  },
+})
+```
+
+### Containers
+
+Containers usually have no OS keychain, so the `'auto'` storage resolves to a file inside
+the container. If the container is recreated without a volume, that file is lost along
+with the rotated token, and the seed (`QUESTRADE_REFRESH_TOKEN`) was already consumed on
+the first run. The next start fails with an `AuthenticationError` that mentions this case.
+
+Keep the token on persistent storage. Point the file storage at a volume, so the path does
+not depend on which user the container runs as:
+
+```typescript
+const client = new QuestradeClient({
+  tokenStorage: { type: 'file', filePath: '/data/questrade/refresh-token' },
+})
+```
+
+```yaml
+# docker-compose.yml
+services:
+  bot:
+    image: my-bot
+    environment:
+      QUESTRADE_REFRESH_TOKEN: ${QUESTRADE_REFRESH_TOKEN} # seed, consumed on the first run only
+    volumes:
+      - questrade-token:/data/questrade
+
+volumes:
+  questrade-token:
+```
+
+Keep a single replica per token: refresh tokens are single-use, so two containers
+refreshing the same token invalidate each other. On Kubernetes, use a `PersistentVolumeClaim`
+with one replica, or a secrets manager through a custom `ITokenStorage` (see above).
+
 ### What Happens Internally
 
-1. `initialize()` is called
-2. If no `refreshToken` is in config, SDK loads it from `tokenStorage`
-3. SDK exchanges the refresh token for an access token
-4. SDK receives new tokens (old refresh token is now invalid)
-5. SDK updates internal state:
-   - Creates `HttpClient` with `access_token` and `api_server`
-   - Saves the new `refresh_token` to `tokenStorage`
+1. `initialize()` reads the stored token, then falls back to the seed if needed
+2. SDK exchanges the refresh token for an access token
+3. SDK receives new tokens (old refresh token is now invalid)
+4. SDK updates its single `HttpClient` with `access_token` and `api_server`
+5. SDK saves the new `refresh_token` to `tokenStorage`
 6. SDK calls `onTokenRefresh` callback (if provided) for additional custom logic
 7. SDK schedules auto-refresh (if enabled)
 
@@ -143,7 +224,7 @@ try {
 }
 ```
 
-**Note**: The `HttpClient` is created **before** storage save, so the client
+**Note**: The `HttpClient` is updated **before** storage save, so the client
 remains usable in-memory even if storage fails.
 
 ### onTokenRefresh Callback (optional)
@@ -178,52 +259,57 @@ const client = new QuestradeClient({
 
 ## Best Practices
 
-### ✅ DO
+### Do
 
-- Use `TokenStorageType.SECURE` in production
-- Use `TokenStorageType.ENV` for local development
-- Use `TokenStorageType.MEMORY` for unit tests
+- Keep the default `'auto'` storage on desktops, or `'secure'` to require the keychain
+- Use a secrets manager through a custom `ITokenStorage` on production servers
+- Use `'memory'` for unit tests
 - Handle `TokenStorageError` to recover tokens if storage fails
 - Use a separate test account for integration tests
 
-### ❌ DON'T
+### Don't
 
 - Don't reuse old refresh tokens (they're invalidated immediately)
-- Don't store tokens in plain text in production (use secure storage)
+- Don't store tokens in plaintext inside the project
 - Don't commit tokens to version control
 - Don't run integration tests frequently (each run rotates the token)
 
 ## Troubleshooting
 
-### Error: 400 Bad Request on token refresh
+### AuthenticationError: "Questrade rejected the refresh token from ..."
 
-**Cause**: The refresh token has already been used and rotated.
+**Cause**: The stored token and the seed (if any) were both rejected. They were already
+used, expired, or revoked. The token endpoint reports this as `400 Bad Request`.
+
+If the message says the token storage was empty, the rotated token from a previous run
+was lost, usually because a container was recreated without a volume (see
+[Containers](#containers)). Persist the storage before generating a new token.
 
 **Solution**:
 1. Go to Questrade dashboard: https://apphub.questrade.com/UI/UserApps.aspx
 2. Generate a new refresh token
-3. Update your `tokenStorage` with the new token (or provide it as `refreshToken`)
+3. Run `kest-trade-sdk login`, or set `QUESTRADE_REFRESH_TOKEN` to the new token
 
-### Error: "Cannot refresh token: no refresh token available"
+### Error: "No refresh token available"
 
-**Cause**: No `refreshToken` was provided and `tokenStorage` has no saved token.
+**Cause**: Storage is empty and no seed was provided.
 
-**Solution**: Provide a `refreshToken` on first run, or ensure `tokenStorage`
-has a previously saved token.
+**Solution**: Run `kest-trade-sdk login` or set `QUESTRADE_REFRESH_TOKEN`.
 
 ### Error: TokenStorageError
 
-**Cause**: Token storage backend failed (e.g., keychain locked, .env not writable).
+**Cause**: Token storage backend failed (e.g., keychain locked, file not writable).
 
 **Solution**: Recover the new token from `error.refreshToken` and save it
 manually. The client is still usable in-memory.
 
-### Error: "Bun.secrets is not available"
+### [WARN] "OS keychain unusable, storing the refresh token in a user-only file"
 
-**Cause**: Running in an environment where `Bun.secrets` is not supported.
+**Cause**: The `'auto'` storage could not use the keychain (no Secret Service on Linux,
+or `@napi-rs/keyring` not installed on Node.js). The `reason` field says which.
 
-**Solution**: Use `TokenStorageType.ENV` or `TokenStorageType.MEMORY` instead,
-or provide a custom `ITokenStorage` implementation.
+**Solution**: Nothing, if a user-only file is acceptable. Otherwise install the missing
+piece, or configure `'secure'` (fail loud) or a custom `ITokenStorage`.
 
 ## Testing with Token Rotation
 
@@ -235,34 +321,31 @@ Unit tests mock the token responses and don't use real tokens:
 bun run test:unit
 ```
 
-Use `TokenStorageType.MEMORY` in test setup to avoid clobbering real `.env` files.
+Use `TokenStorageType.MEMORY` in test setup so tests never touch a real token.
 
 ### Integration Tests
 
 Integration tests use real tokens and will rotate them:
 
 ```bash
-# ⚠️ Warning: This will consume and rotate your refresh token!
+# Warning: this consumes and rotates your refresh token
 bun run test:integration
 ```
 
 **Recommendation**:
 - Use a separate test account for integration tests
 - Run integration tests sparingly
-- Use `TokenStorageType.SECURE` so rotated tokens are saved automatically
+- Keep the default storage so rotated tokens are saved automatically
 
 ## Example: Complete Implementation
 
 ```typescript
-import { QuestradeClient, TokenStorageError, TokenStorageType } from 'kest-trade-sdk'
+import { QuestradeClient, TokenStorageError } from 'kest-trade-sdk'
 
 async function main() {
-  // First run: provide refreshToken, SDK saves to secure storage
-  // Subsequent runs: SDK loads from secure storage automatically
+  // First token: `kest-trade-sdk login` or QUESTRADE_REFRESH_TOKEN.
+  // Every later run reads the rotated token from the default storage.
   const client = new QuestradeClient({
-    refreshToken: process.env.QUESTRADE_REFRESH_TOKEN, // undefined on subsequent runs
-    tokenStorage: TokenStorageType.SECURE,
-    autoRefresh: true,
     onTokenRefresh: async () => {
       // SDK already saved the token. This is for additional logic only.
       console.log('Token rotated at:', new Date().toISOString())
@@ -272,12 +355,10 @@ async function main() {
   try {
     await client.initialize()
 
-    // Use the client normally
     const accounts = await client.accounts.getAccounts()
     console.log('Accounts:', accounts.accounts.length)
   } catch (error) {
     if (error instanceof TokenStorageError) {
-      // Recover the new token manually
       await saveTokenManually(error.refreshToken)
     }
     throw error
