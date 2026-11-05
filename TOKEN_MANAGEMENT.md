@@ -158,6 +158,40 @@ const client = new QuestradeClient({
 })
 ```
 
+### Containers
+
+Containers usually have no OS keychain, so the `'auto'` storage resolves to a file inside
+the container. If the container is recreated without a volume, that file is lost along
+with the rotated token, and the seed (`QUESTRADE_REFRESH_TOKEN`) was already consumed on
+the first run. The next start fails with an `AuthenticationError` that mentions this case.
+
+Keep the token on persistent storage. Point the file storage at a volume, so the path does
+not depend on which user the container runs as:
+
+```typescript
+const client = new QuestradeClient({
+  tokenStorage: { type: 'file', filePath: '/data/questrade/refresh-token' },
+})
+```
+
+```yaml
+# docker-compose.yml
+services:
+  bot:
+    image: my-bot
+    environment:
+      QUESTRADE_REFRESH_TOKEN: ${QUESTRADE_REFRESH_TOKEN} # seed, consumed on the first run only
+    volumes:
+      - questrade-token:/data/questrade
+
+volumes:
+  questrade-token:
+```
+
+Keep a single replica per token: refresh tokens are single-use, so two containers
+refreshing the same token invalidate each other. On Kubernetes, use a `PersistentVolumeClaim`
+with one replica, or a secrets manager through a custom `ITokenStorage` (see above).
+
 ### What Happens Internally
 
 1. `initialize()` reads the stored token, then falls back to the seed if needed
@@ -246,6 +280,10 @@ const client = new QuestradeClient({
 
 **Cause**: The stored token and the seed (if any) were both rejected. They were already
 used, expired, or revoked. The token endpoint reports this as `400 Bad Request`.
+
+If the message says the token storage was empty, the rotated token from a previous run
+was lost, usually because a container was recreated without a volume (see
+[Containers](#containers)). Persist the storage before generating a new token.
 
 **Solution**:
 1. Go to Questrade dashboard: https://apphub.questrade.com/UI/UserApps.aspx

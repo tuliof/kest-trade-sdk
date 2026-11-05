@@ -244,6 +244,14 @@ describe('QuestradeClient', () => {
         await expect(client.initialize()).rejects.toThrow(
           'rejected the refresh token from storage and seed',
         )
+        await expect(client.initialize()).rejects.not.toThrow('persist the token storage')
+      })
+
+      test('points to storage persistence when only a seed was available and it was rejected', async () => {
+        mockTokenEndpoint([])
+        const { client } = await createClientWithStoredToken(null, 'consumed_seed')
+
+        await expect(client.initialize()).rejects.toThrow('persist the token storage with a volume')
       })
 
       test('does not try the seed when the stored token fails for a non-auth reason', async () => {

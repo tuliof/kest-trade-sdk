@@ -63,8 +63,14 @@ function describeRejectedTokens(
   lastError: AuthenticationError,
 ): AuthenticationError {
   const sources = candidates.map((candidate) => candidate.source).join(' and ')
+  // A rejected seed with empty storage is the signature of storage that did not
+  // survive a restart, typically a container recreated without a volume
+  const storageWasEmpty = candidates.every((candidate) => candidate.source === 'seed')
+  const persistenceHint = storageWasEmpty
+    ? ' The token storage was empty, so the rotated token from a previous run was lost. If you run in a container, persist the token storage with a volume (see TOKEN_MANAGEMENT.md, "Containers").'
+    : ''
   return new AuthenticationError(
-    `Questrade rejected the refresh token from ${sources}. Refresh tokens are single-use. Generate a new one in the Questrade API Centre, then run \`kest-trade-sdk login\` or set ${SEED_REFRESH_TOKEN_ENV_VAR}.`,
+    `Questrade rejected the refresh token from ${sources}. Refresh tokens are single-use.${persistenceHint} Generate a new one in the Questrade API Centre, then run \`kest-trade-sdk login\` or set ${SEED_REFRESH_TOKEN_ENV_VAR}.`,
     lastError.apiErrorCode,
     { cause: lastError },
   )
