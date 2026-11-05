@@ -10,6 +10,9 @@ import {
   type ITokenStorage,
   type MemoryStorageConfig,
   MemoryTokenStorage,
+  parseEnvValue,
+  resolveSecretsBackend,
+  type SecretsBackend,
   type SecureStorageConfig,
   SecureTokenStorage,
   TokenStorageError,
@@ -113,6 +116,106 @@ describe('EnvTokenStorage', () => {
     expect(content).toContain('QUESTRADE_REFRESH_TOKEN=appended-token')
   })
 
+  test('should not touch variables that merely end with the target name', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'OLD_QUESTRADE_REFRESH_TOKEN=keep\nQUESTRADE_REFRESH_TOKEN=abc\n')
+
+    await storage.set('new-token')
+
+    const content = await Bun.file(envPath).text()
+    expect(content).toBe('OLD_QUESTRADE_REFRESH_TOKEN=keep\nQUESTRADE_REFRESH_TOKEN=new-token\n')
+  })
+
+  test('should append when only a suffix-matching variable exists', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'OLD_QUESTRADE_REFRESH_TOKEN=keep\n')
+
+    await storage.set('fresh')
+
+    const content = await Bun.file(envPath).text()
+    expect(content).toBe('OLD_QUESTRADE_REFRESH_TOKEN=keep\nQUESTRADE_REFRESH_TOKEN=fresh\n')
+  })
+
+  test('should store tokens containing replacement patterns literally', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'QUESTRADE_REFRESH_TOKEN=abc\n')
+
+    await storage.set('new$&tok$1$$')
+
+    expect(await storage.get()).toBe('new$&tok$1$$')
+  })
+
+  test('should write the env file with owner-only permissions and leave no temp files', async () => {
+    const { readdir, stat } = await import('node:fs/promises')
+    await storage.set('first')
+    await storage.set('second')
+
+    const mode = (await stat(envPath)).mode & 0o777
+    expect(mode).toBe(0o600)
+    expect(await readdir(tempDir)).toEqual(['.env'])
+  })
+
+  test('should resolve relative env paths against the working directory', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const relativeName = `.env.rel-${Math.random().toString(36).slice(2)}`
+    const relativeStorage = new EnvTokenStorage(relativeName)
+    try {
+      await relativeStorage.set('rel-token')
+      expect(await readFile(join(process.cwd(), relativeName), 'utf8')).toBe(
+        'QUESTRADE_REFRESH_TOKEN=rel-token\n',
+      )
+      expect(await relativeStorage.get()).toBe('rel-token')
+    } finally {
+      await relativeStorage.delete()
+    }
+  })
+
+  test('should not depend on Bun.file for env file access', async () => {
+    const originalFile = Bun.file
+    const bunRuntime = Bun as { file: unknown }
+    bunRuntime.file = () => {
+      throw new Error('Bun.file must not be used')
+    }
+    try {
+      await storage.set('portable')
+      expect(await storage.get()).toBe('portable')
+      await storage.delete()
+    } finally {
+      bunRuntime.file = originalFile
+    }
+  })
+
+  test('should strip surrounding double quotes from the stored value', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'QUESTRADE_REFRESH_TOKEN="quoted-token"\n')
+    expect(await storage.get()).toBe('quoted-token')
+  })
+
+  test('should strip surrounding single quotes from the stored value', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, "QUESTRADE_REFRESH_TOKEN='quoted-token'\n")
+    expect(await storage.get()).toBe('quoted-token')
+  })
+
+  test('should read values from CRLF files without a trailing carriage return', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'OTHER=1\r\nQUESTRADE_REFRESH_TOKEN=crlf-token\r\n')
+    expect(await storage.get()).toBe('crlf-token')
+  })
+
+  test('should preserve CRLF line endings when updating the token', async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(envPath, 'OTHER=1\r\nQUESTRADE_REFRESH_TOKEN=old\r\n')
+    await storage.set('new')
+    expect(await Bun.file(envPath).text()).toBe('OTHER=1\r\nQUESTRADE_REFRESH_TOKEN=new\r\n')
+  })
+
+  test('should throw on get when the env path cannot be read', async () => {
+    const directoryStorage = new EnvTokenStorage(tempDir, 'QUESTRADE_REFRESH_TOKEN')
+
+    await expect(directoryStorage.get()).rejects.toThrow('Failed to read token')
+  })
+
   test('should delete token from .env file', async () => {
     await storage.set('my-refresh-token')
     await storage.delete()
@@ -165,27 +268,100 @@ describe('EnvTokenStorage', () => {
   })
 })
 
-describe('SecureTokenStorage', () => {
-  test('should throw TokenStorageError on set when Bun.secrets is not available', async () => {
-    const storage = new SecureTokenStorage()
-    await expect(storage.set('my-token')).rejects.toThrow(TokenStorageError)
-    await expect(storage.set('my-token')).rejects.toThrow('Bun.secrets is not available')
+function createFakeSecrets() {
+  const entries = new Map<string, string>()
+  const keyOf = (options: { service: string; name: string }) => `${options.service}/${options.name}`
+  const backend: SecretsBackend = {
+    async get(options) {
+      return entries.get(keyOf(options)) ?? null
+    },
+    async set(options) {
+      entries.set(keyOf(options), options.value)
+    },
+    async delete(options) {
+      return entries.delete(keyOf(options))
+    },
+  }
+  return { backend, entries }
+}
+
+describe('resolveSecretsBackend', () => {
+  test('should throw a descriptive error when the Bun runtime is absent', () => {
+    expect(() => resolveSecretsBackend(undefined)).toThrow('requires the Bun runtime')
   })
 
-  test('should return null on get when Bun.secrets is not available', async () => {
-    const storage = new SecureTokenStorage()
+  test('should throw a descriptive error when Bun.secrets is missing', () => {
+    expect(() => resolveSecretsBackend({})).toThrow('requires the Bun runtime')
+  })
+
+  test('should return the secrets backend of the Bun runtime', () => {
+    const { backend } = createFakeSecrets()
+    expect(resolveSecretsBackend({ secrets: backend })).toBe(backend)
+  })
+})
+
+describe('SecureTokenStorage', () => {
+  test('should store and retrieve a token through Bun.secrets-style backend', async () => {
+    const { backend, entries } = createFakeSecrets()
+    const storage = new SecureTokenStorage('tok', 'svc', undefined, backend)
+
+    await storage.set('my-token')
+
+    expect(entries.get('svc/tok')).toBe('my-token')
+    expect(await storage.get()).toBe('my-token')
+  })
+
+  test('should return null on get when no token is stored', async () => {
+    const { backend } = createFakeSecrets()
+    const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
     expect(await storage.get()).toBeNull()
   })
 
-  test('TokenStorageError from set should carry the refresh token', async () => {
-    const storage = new SecureTokenStorage()
+  test('should throw on get when the backend fails instead of reporting not found', async () => {
+    const { backend } = createFakeSecrets()
+    backend.get = async () => {
+      throw new Error('keychain locked')
+    }
+    const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
+
+    await expect(storage.get()).rejects.toThrow('keychain locked')
+  })
+
+  test('should remove the keychain entry on delete instead of blanking it', async () => {
+    const { backend, entries } = createFakeSecrets()
+    const storage = new SecureTokenStorage('tok', 'svc', undefined, backend)
+    await storage.set('my-token')
+
+    await storage.delete()
+
+    expect(entries.has('svc/tok')).toBe(false)
+    expect(await storage.get()).toBeNull()
+  })
+
+  test('should wrap backend set failures in TokenStorageError carrying the token', async () => {
+    const { backend } = createFakeSecrets()
+    backend.set = async () => {
+      throw new Error('keychain locked')
+    }
+    const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
+
     try {
       await storage.set('secret-refresh-token')
       expect.unreachable('Should have thrown')
     } catch (error) {
       expect(error).toBeInstanceOf(TokenStorageError)
       expect((error as TokenStorageError).refreshToken).toBe('secret-refresh-token')
+      expect((error as TokenStorageError).cause).toBeInstanceOf(Error)
     }
+  })
+
+  test('should propagate backend delete failures', async () => {
+    const { backend } = createFakeSecrets()
+    backend.delete = async () => {
+      throw new Error('keychain locked')
+    }
+    const storage = new SecureTokenStorage(undefined, undefined, undefined, backend)
+    await expect(storage.delete()).rejects.toThrow('keychain locked')
   })
 })
 
@@ -303,4 +479,20 @@ describe('ITokenStorage interface compliance', () => {
       expect(await storage.get()).toBeNull()
     })
   }
+})
+
+describe('parseEnvValue', () => {
+  test('should leave unquoted values untouched', () => {
+    expect(parseEnvValue('abc')).toBe('abc')
+  })
+
+  test('should not strip mismatched or lone quotes', () => {
+    expect(parseEnvValue('"abc')).toBe('"abc')
+    expect(parseEnvValue('"abc\'')).toBe('"abc\'')
+    expect(parseEnvValue('"')).toBe('"')
+  })
+
+  test('should strip a trailing carriage return before unquoting', () => {
+    expect(parseEnvValue('"abc"\r')).toBe('abc')
+  })
 })

@@ -8,6 +8,43 @@ import {
   getResponseLogLevel,
   type HttpLogOptions,
 } from './logger'
+import {
+  assertValidRequestTimeout,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  describeTimeout,
+  isTimeoutError,
+} from './request-timeout'
+
+const MAX_ERROR_MESSAGE_LENGTH = 200
+
+/**
+ * Raw text of a body that was declared as JSON but could not be parsed.
+ */
+class UnparseableBody {
+  constructor(readonly text: string) {}
+}
+
+function truncate(text: string): string {
+  return text.length > MAX_ERROR_MESSAGE_LENGTH
+    ? `${text.slice(0, MAX_ERROR_MESSAGE_LENGTH)}...`
+    : text
+}
+
+/**
+ * Turn the raw response text into a trusted value.
+ * - empty body: undefined (e.g. 204)
+ * - JSON content type: the parsed value, or UnparseableBody if malformed
+ * - anything else (HTML error pages, plain text): the raw string
+ */
+function parseResponseBody(rawBody: string, contentType: string | undefined): unknown {
+  if (rawBody === '') return undefined
+  if (!contentType || !/json/i.test(contentType)) return new UnparseableBody(rawBody)
+  try {
+    return JSON.parse(rawBody)
+  } catch {
+    return new UnparseableBody(rawBody)
+  }
+}
 
 /**
  * HTTP Client for making requests to the Questrade API
@@ -18,6 +55,7 @@ export class HttpClient {
   private accessToken: string
   private logger: Logger
   private logOptions: HttpLogOptions
+  private readonly requestTimeoutMs: number
 
   /**
    * Create a new HTTP client
@@ -25,17 +63,35 @@ export class HttpClient {
    * @param accessToken - The Bearer access token
    * @param logger - Logger for request/response/error logging (default: silent)
    * @param logOptions - HTTP-specific log formatting options
+   * @param requestTimeoutMs - Abort a request and throw NetworkError after this many ms (default: 30000)
    */
   constructor(
     apiServer: string,
     accessToken: string,
     logger: Logger = new SilentLogger(),
     logOptions: HttpLogOptions = {},
+    requestTimeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
   ) {
-    this.apiServer = apiServer.endsWith('/') ? apiServer.slice(0, -1) : apiServer
+    this.apiServer = HttpClient.normalizeApiServer(apiServer)
     this.accessToken = accessToken
     this.logger = logger
     this.logOptions = logOptions
+    this.requestTimeoutMs = assertValidRequestTimeout(requestTimeoutMs)
+  }
+
+  private static normalizeApiServer(apiServer: string): string {
+    return apiServer.endsWith('/') ? apiServer.slice(0, -1) : apiServer
+  }
+
+  /**
+   * Replace the API server and access token together. Questrade returns both
+   * on every token refresh, and the server can change between refreshes.
+   * @param apiServer - The API server URL
+   * @param accessToken - The new Bearer access token
+   */
+  public updateCredentials(apiServer: string, accessToken: string): void {
+    this.apiServer = HttpClient.normalizeApiServer(apiServer)
+    this.accessToken = accessToken
   }
 
   /**
@@ -52,6 +108,14 @@ export class HttpClient {
    */
   public setLogger(logger: Logger): void {
     this.logger = logger
+  }
+
+  /**
+   * Update HTTP log formatting options; applies to subsequent requests
+   * @param logOptions - New HTTP log options
+   */
+  public setLogOptions(logOptions: HttpLogOptions): void {
+    this.logOptions = logOptions
   }
 
   /**
@@ -137,35 +201,35 @@ export class HttpClient {
       const response = await fetch(url, {
         ...options,
         headers: requestHeaders,
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
       })
 
-      const duration = Date.now() - startTime
-
-      // Parse response body
-      const responseBody = await response.json()
-
-      // Log response
       const responseHeaders: Record<string, string> = {}
       response.headers.forEach((value, key) => {
         responseHeaders[key] = value
       })
-      const level = getResponseLogLevel(response.status)
-      const responseEntry = formatResponseEntry(
+      const responseBody = parseResponseBody(await response.text(), responseHeaders['content-type'])
+
+      const duration = Date.now() - startTime
+
+      this.logResponse(
         method,
         url,
         response.status,
         responseHeaders,
-        responseBody,
+        responseBody instanceof UnparseableBody ? responseBody.text : responseBody,
         duration,
-        this.logOptions,
       )
-      if (level === 'error') this.logger.error('HTTP Response', responseEntry)
-      else if (level === 'warn') this.logger.warn('HTTP Response', responseEntry)
-      else this.logger.info('HTTP Response', responseEntry)
 
-      // Handle non-2xx responses
       if (!response.ok) {
         await this.handleErrorResponse(response.status, responseHeaders, responseBody)
+      }
+
+      if (responseBody instanceof UnparseableBody) {
+        throw new NetworkError(
+          `Expected a JSON response but received ${responseHeaders['content-type'] ?? 'no content type'}: ${truncate(responseBody.text)}`,
+          response.status,
+        )
       }
 
       return responseBody as T
@@ -185,16 +249,46 @@ export class HttpClient {
         throw error
       }
 
-      // Wrap other errors in NetworkError
-      const networkError = new NetworkError('Network request failed', undefined, undefined, {
-        cause: error,
-      })
+      const networkError = new NetworkError(
+        isTimeoutError(error)
+          ? describeTimeout(url, this.requestTimeoutMs)
+          : 'Network request failed',
+        undefined,
+        undefined,
+        { cause: error },
+      )
       this.logger.error(
         'HTTP Error',
         formatErrorEntry(method, url, networkError, duration, this.logOptions),
       )
       throw networkError
     }
+  }
+
+  /**
+   * Log the response line (status, url, duration) at a status-derived level.
+   * The body is financial data, so it is only emitted separately at debug level.
+   */
+  private logResponse(
+    method: string,
+    url: string,
+    status: number,
+    headers: Record<string, string>,
+    body: unknown,
+    duration: number,
+  ): void {
+    const level = getResponseLogLevel(status)
+    const summary = formatResponseEntry(method, url, status, headers, undefined, duration, {
+      ...this.logOptions,
+      logResponseBody: false,
+    })
+    this.logger[level]('HTTP Response', summary)
+
+    if (!this.logOptions.logResponseBody) return
+    this.logger.debug(
+      'HTTP Response Body',
+      formatResponseEntry(method, url, status, headers, body, duration, this.logOptions),
+    )
   }
 
   /**
@@ -205,24 +299,19 @@ export class HttpClient {
     headers: Record<string, string>,
     errorBody: unknown,
   ): Promise<never> {
-    // Try to parse error response
     let errorMessage = `HTTP ${statusCode} error`
     let apiErrorCode: number | undefined
 
-    try {
-      const contentType = headers['content-type']
-      if (contentType?.includes('application/json')) {
-        const parsedError = APIErrorSchema.safeParse(errorBody)
-
-        if (parsedError.success) {
-          apiErrorCode = parsedError.data.code
-          errorMessage = parsedError.data.message
-        }
-      } else if (typeof errorBody === 'string') {
-        errorMessage = errorBody
+    if (errorBody instanceof UnparseableBody) {
+      errorMessage = truncate(errorBody.text)
+    } else if (typeof errorBody === 'string') {
+      errorMessage = truncate(errorBody)
+    } else {
+      const parsedError = APIErrorSchema.safeParse(errorBody)
+      if (parsedError.success) {
+        apiErrorCode = parsedError.data.code
+        errorMessage = parsedError.data.message
       }
-    } catch {
-      // Failed to parse error, use default message
     }
 
     // Throw appropriate error type based on status code

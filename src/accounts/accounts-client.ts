@@ -8,11 +8,28 @@ import {
   ActivitiesResponseSchema,
   type ExecutionsResponse,
   ExecutionsResponseSchema,
+  type OrderStateFilter,
+  OrderStateFilterSchema,
   type OrdersResponse,
   OrdersResponseSchema,
   type PositionsResponse,
   PositionsResponseSchema,
 } from '@/types/positions'
+import { assertDateRangeWithinDays, assertValidDateRange } from '@/validation'
+
+const MAX_ACTIVITIES_RANGE_DAYS = 31
+
+function parseStateFilter(stateFilter: unknown): OrderStateFilter | undefined {
+  if (stateFilter === undefined) return undefined
+  const parsed = OrderStateFilterSchema.safeParse(stateFilter)
+  if (!parsed.success) {
+    throw new ValidationError(
+      `Invalid stateFilter ${JSON.stringify(stateFilter)}: expected 'All', 'Open' or 'Closed'`,
+      parsed.error.issues,
+    )
+  }
+  return parsed.data
+}
 
 /**
  * AccountsClient handles account-related operations
@@ -50,7 +67,9 @@ export class AccountsClient {
    * @returns Balance information for the account
    */
   async getBalances(accountNumber: string): Promise<BalancesResponse> {
-    const response = await this.httpClient.get<unknown>(`/v1/accounts/${accountNumber}/balances`)
+    const response = await this.httpClient.get<unknown>(
+      `/v1/accounts/${encodeURIComponent(accountNumber)}/balances`,
+    )
 
     const validationResult = BalancesResponseSchema.safeParse(response)
     if (!validationResult.success) {
@@ -69,7 +88,9 @@ export class AccountsClient {
    * @returns Position information for the account
    */
   async getPositions(accountNumber: string): Promise<PositionsResponse> {
-    const response = await this.httpClient.get<unknown>(`/v1/accounts/${accountNumber}/positions`)
+    const response = await this.httpClient.get<unknown>(
+      `/v1/accounts/${encodeURIComponent(accountNumber)}/positions`,
+    )
 
     const validationResult = PositionsResponseSchema.safeParse(response)
     if (!validationResult.success) {
@@ -86,7 +107,8 @@ export class AccountsClient {
    * Get activities for a specific account
    * @param accountNumber - The account number
    * @param startTime - Start date/time
-   * @param endTime - End date/time
+   * @param endTime - End date/time (at most 31 days after startTime)
+   * @throws ValidationError if a date is invalid, endTime is before startTime, or the range exceeds 31 days
    * @returns Activity information for the account
    */
   async getActivities(
@@ -94,11 +116,8 @@ export class AccountsClient {
     startTime: Date,
     endTime: Date,
   ): Promise<ActivitiesResponse> {
-    // Validate date range (max 31 days)
-    const daysDiff = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60 * 24)
-    if (daysDiff > 31) {
-      throw new ValidationError('Date range cannot exceed 31 days', [])
-    }
+    assertValidDateRange(startTime, endTime)
+    assertDateRangeWithinDays(startTime, endTime, MAX_ACTIVITIES_RANGE_DAYS)
 
     const params = new URLSearchParams({
       startTime: startTime.toISOString(),
@@ -106,7 +125,7 @@ export class AccountsClient {
     })
 
     const response = await this.httpClient.get<unknown>(
-      `/v1/accounts/${accountNumber}/activities?${params}`,
+      `/v1/accounts/${encodeURIComponent(accountNumber)}/activities?${params}`,
     )
 
     const validationResult = ActivitiesResponseSchema.safeParse(response)
@@ -132,13 +151,15 @@ export class AccountsClient {
     startTime: Date,
     endTime: Date,
   ): Promise<ExecutionsResponse> {
+    assertValidDateRange(startTime, endTime)
+
     const params = new URLSearchParams({
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
     })
 
     const response = await this.httpClient.get<unknown>(
-      `/v1/accounts/${accountNumber}/executions?${params}`,
+      `/v1/accounts/${encodeURIComponent(accountNumber)}/executions?${params}`,
     )
 
     const validationResult = ExecutionsResponseSchema.safeParse(response)
@@ -157,26 +178,30 @@ export class AccountsClient {
    * @param accountNumber - The account number
    * @param startTime - Start date/time
    * @param endTime - End date/time
-   * @param stateFilter - Optional order state filter (e.g., 'All', 'Open', 'Closed')
+   * @param stateFilter - Optional order state filter: 'All', 'Open' or 'Closed'
+   * @throws ValidationError if stateFilter is not one of the allowed values
    * @returns Order information for the account
    */
   async getOrders(
     accountNumber: string,
     startTime: Date,
     endTime: Date,
-    stateFilter?: string,
+    stateFilter?: OrderStateFilter,
   ): Promise<OrdersResponse> {
+    assertValidDateRange(startTime, endTime)
+    const parsedStateFilter = parseStateFilter(stateFilter)
+
     const params = new URLSearchParams({
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
     })
 
-    if (stateFilter) {
-      params.append('stateFilter', stateFilter)
+    if (parsedStateFilter) {
+      params.append('stateFilter', parsedStateFilter)
     }
 
     const response = await this.httpClient.get<unknown>(
-      `/v1/accounts/${accountNumber}/orders?${params}`,
+      `/v1/accounts/${encodeURIComponent(accountNumber)}/orders?${params}`,
     )
 
     const validationResult = OrdersResponseSchema.safeParse(response)

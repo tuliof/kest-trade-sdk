@@ -313,6 +313,127 @@ describe('AccountsClient', () => {
     })
   })
 
+  describe('path parameter encoding', () => {
+    const hostileAccountNumber = '123/../admin?x=1#frag'
+    const encodedSegment = '123%2F..%2Fadmin%3Fx%3D1%23frag'
+
+    async function capturePath(call: () => Promise<unknown>): Promise<string> {
+      let capturedUrl = ''
+      globalThis.fetch = mock(async (url: string) => {
+        capturedUrl = url
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }) as unknown as typeof fetch
+      await call().catch(() => {})
+      return capturedUrl
+    }
+
+    const range = [new Date('2025-11-01T00:00:00Z'), new Date('2025-11-02T00:00:00Z')] as const
+
+    test('should encode the account number in getBalances', async () => {
+      const url = await capturePath(() => accountsClient.getBalances(hostileAccountNumber))
+      expect(url).toBe(`https://api01.iq.questrade.com/v1/accounts/${encodedSegment}/balances`)
+    })
+
+    test('should encode the account number in getPositions', async () => {
+      const url = await capturePath(() => accountsClient.getPositions(hostileAccountNumber))
+      expect(url).toBe(`https://api01.iq.questrade.com/v1/accounts/${encodedSegment}/positions`)
+    })
+
+    test('should encode the account number in getActivities, getExecutions and getOrders', async () => {
+      for (const [endpoint, call] of [
+        ['activities', () => accountsClient.getActivities(hostileAccountNumber, ...range)],
+        ['executions', () => accountsClient.getExecutions(hostileAccountNumber, ...range)],
+        ['orders', () => accountsClient.getOrders(hostileAccountNumber, ...range)],
+      ] as const) {
+        const url = await capturePath(call)
+        expect(url).toContain(`/v1/accounts/${encodedSegment}/${endpoint}?`)
+      }
+    })
+  })
+
+  describe('date range validation', () => {
+    const valid = new Date('2025-11-01T00:00:00Z')
+    const earlier = new Date('2025-10-31T00:00:00Z')
+    const invalid = new Date('not a date')
+
+    beforeEach(() => {
+      globalThis.fetch = mock(async () => {
+        throw new Error('fetch must not be called for invalid input')
+      }) as unknown as typeof fetch
+    })
+
+    const methods = {
+      getActivities: (start: Date, end: Date) => accountsClient.getActivities('1', start, end),
+      getExecutions: (start: Date, end: Date) => accountsClient.getExecutions('1', start, end),
+      getOrders: (start: Date, end: Date) => accountsClient.getOrders('1', start, end),
+    }
+
+    for (const [name, call] of Object.entries(methods)) {
+      test(`${name} should reject endTime before startTime`, async () => {
+        await expect(call(valid, earlier)).rejects.toThrow(ValidationError)
+        await expect(call(valid, earlier)).rejects.toThrow('endTime must not be before startTime')
+      })
+
+      test(`${name} should reject an invalid startTime`, async () => {
+        await expect(call(invalid, valid)).rejects.toThrow('startTime must be a valid Date')
+      })
+
+      test(`${name} should reject an invalid endTime`, async () => {
+        await expect(call(valid, invalid)).rejects.toThrow('endTime must be a valid Date')
+      })
+    }
+
+    test('getExecutions and getOrders should not impose the 31 day activities limit', async () => {
+      const longEnd = new Date('2026-06-01T00:00:00Z')
+      globalThis.fetch = mock(async () => {
+        return new Response('{"executions":[],"orders":[]}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as unknown as typeof fetch
+
+      await expect(accountsClient.getExecutions('1', valid, longEnd)).resolves.toBeDefined()
+      await expect(accountsClient.getOrders('1', valid, longEnd)).resolves.toBeDefined()
+    })
+  })
+
+  describe('stateFilter validation', () => {
+    test('should reject an unknown stateFilter before sending a request', async () => {
+      const mockFetch = mock(async () => new Response('{}'))
+      globalThis.fetch = mockFetch as unknown as typeof fetch
+      const start = new Date('2025-11-01T00:00:00Z')
+      const end = new Date('2025-11-02T00:00:00Z')
+
+      await expect(
+        accountsClient.getOrders('1', start, end, 'Everything' as unknown as 'All'),
+      ).rejects.toThrow(ValidationError)
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    test('should accept each documented stateFilter', async () => {
+      const urls: string[] = []
+      globalThis.fetch = mock(async (url: string) => {
+        urls.push(url)
+        return new Response('{"orders":[]}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as unknown as typeof fetch
+      const start = new Date('2025-11-01T00:00:00Z')
+      const end = new Date('2025-11-02T00:00:00Z')
+
+      for (const filter of ['All', 'Open', 'Closed'] as const) {
+        await accountsClient.getOrders('1', start, end, filter)
+      }
+
+      expect(urls.map((url) => new URL(url).searchParams.get('stateFilter'))).toEqual([
+        'All',
+        'Open',
+        'Closed',
+      ])
+    })
+  })
+
   describe('getActivities', () => {
     test('should successfully fetch account activities', async () => {
       const mockResponse: ActivitiesResponse = {

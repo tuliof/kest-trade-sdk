@@ -22,6 +22,17 @@ describe('MarketClient', () => {
   })
 
   describe('getSymbols', () => {
+    test('should throw ValidationError when neither ids nor names are provided', async () => {
+      const mockFetch = mock(async () => new Response('{}'))
+      globalThis.fetch = mockFetch as unknown as typeof fetch
+
+      await expect(marketClient.getSymbols({})).rejects.toThrow(ValidationError)
+      await expect(marketClient.getSymbols({ ids: [], names: [] })).rejects.toThrow(
+        'at least one symbol ID or name',
+      )
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
     test('should fetch symbols by IDs', async () => {
       const mockResponse: SymbolsResponse = {
         symbols: [
@@ -363,6 +374,21 @@ describe('MarketClient', () => {
   })
 
   describe('getCandles', () => {
+    test('should reject endTime before startTime and invalid dates', async () => {
+      globalThis.fetch = mock(async () => {
+        throw new Error('fetch must not be called for invalid input')
+      }) as unknown as typeof fetch
+      const later = new Date('2025-11-02T00:00:00Z')
+      const earlier = new Date('2025-11-01T00:00:00Z')
+
+      await expect(marketClient.getCandles(8049, later, earlier, 'OneDay')).rejects.toThrow(
+        'endTime must not be before startTime',
+      )
+      await expect(
+        marketClient.getCandles(8049, new Date('nope'), later, 'OneDay'),
+      ).rejects.toThrow(ValidationError)
+    })
+
     test('should fetch candles for symbol', async () => {
       const mockResponse: CandlesResponse = {
         candles: [

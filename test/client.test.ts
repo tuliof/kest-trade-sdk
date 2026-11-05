@@ -5,6 +5,14 @@ import { AuthClient } from '@/auth/auth-client'
 import { QuestradeClient } from '@/client'
 import { MarketClient } from '@/market/market-client'
 import type { TokenResponse } from '@/types/auth'
+import { AuthenticationError, NetworkError } from '@/types/errors'
+
+const pristineAuthClientMethods = {
+  refreshToken: AuthClient.prototype.refreshToken,
+  getTokenExpiresAt: AuthClient.prototype.getTokenExpiresAt,
+  isTokenExpired: AuthClient.prototype.isTokenExpired,
+  isTokenExpiringSoon: AuthClient.prototype.isTokenExpiringSoon,
+}
 
 describe('QuestradeClient', () => {
   let mockTokenResponse: TokenResponse
@@ -34,6 +42,7 @@ describe('QuestradeClient', () => {
   afterEach(() => {
     // Restore original fetch
     globalThis.fetch = originalFetch
+    Object.assign(AuthClient.prototype, pristineAuthClientMethods)
     mock.restore()
   })
 
@@ -50,6 +59,34 @@ describe('QuestradeClient', () => {
         tokenStorage: 'memory',
       })
       expect(client).toBeDefined()
+    })
+
+    test('should reject an invalid requestTimeoutMs', () => {
+      expect(
+        () =>
+          new QuestradeClient({ refreshToken: 'x', tokenStorage: 'memory', requestTimeoutMs: 0 }),
+      ).toThrow('requestTimeoutMs')
+    })
+
+    test('should attach a timeout signal to the token request', async () => {
+      const signals: Array<AbortSignal | null | undefined> = []
+      globalThis.fetch = mock(async (_url: string, options?: RequestInit) => {
+        signals.push(options?.signal)
+        return new Response(JSON.stringify(mockTokenResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as unknown as typeof fetch
+      const client = new QuestradeClient({
+        refreshToken: 'x',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+        requestTimeoutMs: 5000,
+      })
+
+      await client.initialize()
+
+      expect(signals[0]).toBeInstanceOf(AbortSignal)
     })
 
     test('should create client with access token and api server', () => {
@@ -254,6 +291,154 @@ describe('QuestradeClient', () => {
     })
   })
 
+  describe('credential updates across refreshes', () => {
+    const secondTokenResponse = (): TokenResponse => ({
+      access_token: 'second_access_token',
+      refresh_token: 'second_refresh_token',
+      api_server: 'https://api02.test.questrade.com/',
+      expires_in: 1800,
+      token_type: 'Bearer',
+    })
+
+    test('should keep previously obtained sub-clients working with the new access token', async () => {
+      const responses = [mockTokenResponse, secondTokenResponse()]
+      let refreshCalls = 0
+      AuthClient.prototype.refreshToken = mock(
+        async () => responses[refreshCalls++] as TokenResponse,
+      )
+      const requests: Array<{ url: string; authorization: string | undefined }> = []
+      globalThis.fetch = mock(async (url: string, options?: RequestInit) => {
+        const headers = options?.headers as Record<string, string>
+        requests.push({ url, authorization: headers.Authorization })
+        return new Response(JSON.stringify({ accounts: [], userId: 1 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as unknown as typeof fetch
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+      })
+      await client.initialize()
+      const heldAccounts = client.accounts
+      const heldMarket = client.market
+
+      await client.refreshAccessToken()
+      await heldAccounts.getAccounts()
+
+      expect(requests).toEqual([
+        {
+          url: 'https://api02.test.questrade.com/v1/accounts',
+          authorization: 'Bearer second_access_token',
+        },
+      ])
+      expect(client.accounts).toBe(heldAccounts)
+      expect(client.market).toBe(heldMarket)
+    })
+  })
+
+  describe('setHttpLogOptions', () => {
+    test('should apply new log options to requests without waiting for a refresh', async () => {
+      AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
+      const entries: Array<Record<string, unknown> | undefined> = []
+      const logger = {
+        debug: (_message: string, context?: Record<string, unknown>) => {
+          entries.push(context)
+        },
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+      }
+      globalThis.fetch = mock(
+        async () =>
+          new Response(JSON.stringify({ accounts: [], userId: 1 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      ) as unknown as typeof fetch
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+        logger,
+      })
+      await client.initialize()
+
+      client.setHttpLogOptions({ logRequestHeaders: false, logResponseBody: false })
+      await client.accounts.getAccounts()
+
+      const requestEntry = entries.find((entry) => entry?.method === 'GET')
+      expect(requestEntry?.requestHeaders).toBeUndefined()
+      expect(entries.some((entry) => entry?.responseBody !== undefined)).toBe(false)
+    })
+  })
+
+  describe('concurrent refreshes', () => {
+    function createDeferredRefresh() {
+      let release: (token: TokenResponse) => void = () => {}
+      const gate = new Promise<TokenResponse>((resolve) => {
+        release = resolve
+      })
+      const exchange = mock(async () => gate)
+      return { exchange, release }
+    }
+
+    test('should share one token exchange between concurrent callers', async () => {
+      const { exchange, release } = createDeferredRefresh()
+      AuthClient.prototype.refreshToken = exchange
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+      })
+
+      const first = client.refreshAccessToken()
+      const second = client.refreshAccessToken()
+      release(mockTokenResponse)
+
+      expect(await first).toEqual(mockTokenResponse)
+      expect(await second).toEqual(mockTokenResponse)
+      expect(exchange).toHaveBeenCalledTimes(1)
+    })
+
+    test('should allow a new refresh once the previous one settled', async () => {
+      const exchange = mock(async () => mockTokenResponse)
+      AuthClient.prototype.refreshToken = exchange
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+      })
+
+      await client.refreshAccessToken()
+      await client.refreshAccessToken()
+
+      expect(exchange).toHaveBeenCalledTimes(2)
+    })
+
+    test('should clear the in-flight refresh after a failure', async () => {
+      let calls = 0
+      AuthClient.prototype.refreshToken = mock(async () => {
+        calls++
+        if (calls === 1) throw new Error('boom')
+        return mockTokenResponse
+      })
+      const client = new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        autoRefresh: false,
+      })
+
+      const failing = client.refreshAccessToken()
+      const sharing = client.refreshAccessToken()
+      await expect(failing).rejects.toThrow('boom')
+      await expect(sharing).rejects.toThrow('boom')
+
+      expect(await client.refreshAccessToken()).toEqual(mockTokenResponse)
+    })
+  })
+
   describe('automatic token refresh', () => {
     test('should schedule token refresh when autoRefresh is enabled', async () => {
       const client = new QuestradeClient({
@@ -304,6 +489,140 @@ describe('QuestradeClient', () => {
       await client.initialize()
 
       expect(mockRefreshToken).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('auto-refresh failure handling', () => {
+    const originalRefreshToken = AuthClient.prototype.refreshToken
+    const originalGetTokenExpiresAt = AuthClient.prototype.getTokenExpiresAt
+
+    afterEach(() => {
+      AuthClient.prototype.refreshToken = originalRefreshToken
+      AuthClient.prototype.getTokenExpiresAt = originalGetTokenExpiresAt
+    })
+
+    async function waitFor(condition: () => boolean): Promise<void> {
+      const deadline = Date.now() + 2000
+      while (!condition()) {
+        if (Date.now() > deadline) throw new Error('Timed out waiting for condition')
+        await new Promise((resolve) => setTimeout(resolve, 2))
+      }
+    }
+
+    function expireSoonOnlyOnce() {
+      let reported = false
+      AuthClient.prototype.getTokenExpiresAt = mock(() => {
+        if (reported) return undefined
+        reported = true
+        return new Date(Date.now() + 15)
+      })
+    }
+
+    function createAutoRefreshClient(
+      onAutoRefreshError?: (error: unknown, attempts: number) => void,
+    ) {
+      return new QuestradeClient({
+        refreshToken: 'test_refresh_token',
+        tokenStorage: 'memory',
+        refreshBuffer: 0,
+        autoRefreshRetryDelayMs: 2,
+        onAutoRefreshError,
+      })
+    }
+
+    test('should retry a failed auto-refresh and recover without notifying', async () => {
+      expireSoonOnlyOnce()
+      let calls = 0
+      AuthClient.prototype.refreshToken = mock(async () => {
+        calls++
+        if (calls === 2) throw new NetworkError('flaky', 503)
+        return mockTokenResponse
+      })
+      const onAutoRefreshError = mock(() => {})
+      const client = createAutoRefreshClient(onAutoRefreshError)
+
+      await client.initialize()
+      await waitFor(() => calls >= 3)
+
+      expect(onAutoRefreshError).not.toHaveBeenCalled()
+      client.dispose()
+    })
+
+    test('should give up after 3 attempts and call onAutoRefreshError', async () => {
+      expireSoonOnlyOnce()
+      let calls = 0
+      const failure = new NetworkError('down', 503)
+      AuthClient.prototype.refreshToken = mock(async () => {
+        calls++
+        if (calls > 1) throw failure
+        return mockTokenResponse
+      })
+      const notifications: Array<{ error: unknown; attempts: number }> = []
+      const client = createAutoRefreshClient((error, attempts) => {
+        notifications.push({ error, attempts })
+      })
+
+      await client.initialize()
+      await waitFor(() => notifications.length > 0)
+
+      expect(calls).toBe(4)
+      expect(notifications).toEqual([{ error: failure, attempts: 3 }])
+      client.dispose()
+    })
+
+    test('should not retry a rejected refresh token', async () => {
+      expireSoonOnlyOnce()
+      let calls = 0
+      AuthClient.prototype.refreshToken = mock(async () => {
+        calls++
+        if (calls > 1) throw new AuthenticationError('invalid_grant')
+        return mockTokenResponse
+      })
+      const notifications: number[] = []
+      const client = createAutoRefreshClient((_error, attempts) => {
+        notifications.push(attempts)
+      })
+
+      await client.initialize()
+      await waitFor(() => notifications.length > 0)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+
+      expect(calls).toBe(2)
+      expect(notifications).toEqual([1])
+      client.dispose()
+    })
+
+    test('should survive an onAutoRefreshError callback that throws', async () => {
+      expireSoonOnlyOnce()
+      let calls = 0
+      AuthClient.prototype.refreshToken = mock(async () => {
+        calls++
+        if (calls > 1) throw new AuthenticationError('invalid_grant')
+        return mockTokenResponse
+      })
+      let invoked = false
+      const client = createAutoRefreshClient(() => {
+        invoked = true
+        throw new Error('callback failed')
+      })
+
+      await client.initialize()
+      await waitFor(() => invoked)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      client.dispose()
+    })
+
+    test('should not keep the process alive with the refresh timer', async () => {
+      AuthClient.prototype.refreshToken = mock(async () => mockTokenResponse)
+      AuthClient.prototype.getTokenExpiresAt = mock(() => new Date(Date.now() + 3_600_000))
+      const client = createAutoRefreshClient()
+
+      await client.initialize()
+
+      const timer = (client as unknown as { refreshTimerId?: { hasRef(): boolean } }).refreshTimerId
+      expect(timer?.hasRef()).toBe(false)
+      client.dispose()
     })
   })
 
@@ -392,6 +711,26 @@ describe('QuestradeClient', () => {
       await client.initialize()
 
       expect(client.isTokenExpiringSoon(300)).toBe(true)
+    })
+
+    test('should throw from isTokenExpired in access-token-only mode', async () => {
+      const client = new QuestradeClient({
+        accessToken: 'test_access_token',
+        apiServer: 'https://api.test.questrade.com',
+      })
+      await client.initialize()
+
+      expect(() => client.isTokenExpired()).toThrow('access-token-only mode')
+    })
+
+    test('should throw from isTokenExpiringSoon in access-token-only mode', async () => {
+      const client = new QuestradeClient({
+        accessToken: 'test_access_token',
+        apiServer: 'https://api.test.questrade.com',
+      })
+      await client.initialize()
+
+      expect(() => client.isTokenExpiringSoon()).toThrow('access-token-only mode')
     })
 
     test('should get current token', async () => {

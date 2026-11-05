@@ -10,9 +10,22 @@ import {
 } from '@/auth/token-storage'
 import { HttpClient } from '@/http/http-client'
 import type { HttpLogOptions } from '@/http/logger'
+import { assertValidRequestTimeout, DEFAULT_REQUEST_TIMEOUT_MS } from '@/http/request-timeout'
 import { createLogger, type Logger, type LogLevel, SilentLogger } from '@/logger'
 import { MarketClient } from '@/market/market-client'
 import type { TokenResponse } from '@/types/auth'
+import { AuthenticationError } from '@/types/errors'
+
+const AUTO_REFRESH_MAX_ATTEMPTS = 3
+const DEFAULT_AUTO_REFRESH_RETRY_DELAY_MS = 1000
+
+/**
+ * A rejected refresh token or a storage failure will not be fixed by trying
+ * again (the token has already been rotated in the storage case).
+ */
+function isRetryableRefreshError(error: unknown): boolean {
+  return !(error instanceof AuthenticationError || error instanceof TokenStorageError)
+}
 
 /**
  * Configuration options for QuestradeClient
@@ -71,6 +84,23 @@ export interface QuestradeClientConfig {
    * When enabled, tokens will be refreshed automatically when they're about to expire
    */
   autoRefresh?: boolean
+
+  /**
+   * Base delay in milliseconds between auto-refresh retries (default: 1000).
+   * A failed auto-refresh is attempted up to 3 times in total, doubling the
+   * delay after each failure. Rejected tokens and storage failures are not retried.
+   */
+  autoRefreshRetryDelayMs?: number
+
+  /**
+   * Called when auto-refresh gives up (retries exhausted, token rejected, or
+   * the rotated token could not be stored). Without it, failures are only logged.
+   * Errors thrown by the callback are logged and swallowed.
+   *
+   * @param error - The last error
+   * @param attempts - Number of refresh attempts made
+   */
+  onAutoRefreshError?: (error: unknown, attempts: number) => void | Promise<void>
 
   /**
    * Time in seconds before expiry to trigger auto-refresh (default: 60)
@@ -134,6 +164,13 @@ export interface QuestradeClientConfig {
    * Only relevant when logger is enabled.
    */
   httpLogOptions?: HttpLogOptions
+
+  /**
+   * Per-request timeout in milliseconds for API and token requests.
+   * A timed-out request rejects with a NetworkError.
+   * @default 30000
+   */
+  requestTimeoutMs?: number
 }
 
 /**
@@ -172,11 +209,15 @@ export class QuestradeClient {
     refreshBuffer: number
     tokenStorage: TokenStorageConfig
     httpLogOptions: HttpLogOptions
+    requestTimeoutMs: number
+    autoRefreshRetryDelayMs: number
+    onAutoRefreshError?: (error: unknown, attempts: number) => void | Promise<void>
     onTokenRefresh?: (tokenResponse: TokenResponse) => void | Promise<void>
   }
   private tokenStorage: ITokenStorage
   private currentToken?: TokenResponse
   private refreshTimerId?: Timer
+  private inFlightRefresh?: Promise<TokenResponse>
 
   constructor(config: QuestradeClientConfig) {
     // Validate configuration
@@ -211,13 +252,19 @@ export class QuestradeClient {
         logResponseBody: true,
         ...config.httpLogOptions,
       },
+      requestTimeoutMs: assertValidRequestTimeout(
+        config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+      ),
+      autoRefreshRetryDelayMs:
+        config.autoRefreshRetryDelayMs ?? DEFAULT_AUTO_REFRESH_RETRY_DELAY_MS,
+      onAutoRefreshError: config.onAutoRefreshError,
       onTokenRefresh: config.onTokenRefresh,
     }
 
     // Create token storage instance
     this.tokenStorage = createTokenStorage(this.config.tokenStorage, this.logger)
 
-    this.authClient = new AuthClient()
+    this.authClient = new AuthClient(this.config.requestTimeoutMs)
   }
 
   /**
@@ -230,13 +277,7 @@ export class QuestradeClient {
   async initialize(): Promise<void> {
     // Use existing access token if provided
     if (this.config.accessToken && this.config.apiServer) {
-      this.httpClient = new HttpClient(
-        this.config.apiServer,
-        this.config.accessToken,
-        this.logger,
-        this.config.httpLogOptions,
-      )
-      this.initializeClients()
+      this.applyCredentials(this.config.apiServer, this.config.accessToken)
       return
     }
 
@@ -276,6 +317,8 @@ export class QuestradeClient {
    * - Calling your onTokenRefresh callback (if provided)
    * - Using the new token for subsequent refreshes
    *
+   * Concurrent calls share a single in-flight refresh and resolve to the same result.
+   *
    * @returns The new token response with rotated refresh_token
    * @throws Error if no refresh token is available
    *
@@ -286,7 +329,19 @@ export class QuestradeClient {
    * console.log('New refresh token saved automatically')
    * ```
    */
-  async refreshAccessToken(): Promise<TokenResponse> {
+  refreshAccessToken(): Promise<TokenResponse> {
+    if (this.inFlightRefresh) return this.inFlightRefresh
+
+    // Refresh tokens are single-use: a second concurrent exchange with the
+    // same token would fail, so concurrent callers share one in-flight refresh
+    const refresh = this.performTokenRefresh().finally(() => {
+      this.inFlightRefresh = undefined
+    })
+    this.inFlightRefresh = refresh
+    return refresh
+  }
+
+  private async performTokenRefresh(): Promise<TokenResponse> {
     if (!this.config.refreshToken) {
       throw new Error('Cannot refresh token: no refresh token available')
     }
@@ -297,15 +352,9 @@ export class QuestradeClient {
     // Update refresh token for next use (CRITICAL: tokens are rotated)
     this.config.refreshToken = tokenResponse.refresh_token
 
-    // Create or update HTTP client first, so the client remains usable
+    // Update credentials first, so the client remains usable
     // even if token storage fails
-    this.httpClient = new HttpClient(
-      tokenResponse.api_server,
-      tokenResponse.access_token,
-      this.logger,
-      this.config.httpLogOptions,
-    )
-    this.initializeClients()
+    this.applyCredentials(tokenResponse.api_server, tokenResponse.access_token)
 
     // Schedule auto-refresh if enabled
     if (this.config.autoRefresh) {
@@ -345,46 +394,84 @@ export class QuestradeClient {
    * Schedule automatic token refresh before expiry
    */
   private scheduleTokenRefresh(): void {
-    // Clear existing timer
-    if (this.refreshTimerId) {
-      clearTimeout(this.refreshTimerId)
-    }
-
-    if (!this.authClient.getTokenExpiresAt()) {
-      return
-    }
+    this.clearRefreshTimer()
 
     const expiresAt = this.authClient.getTokenExpiresAt()
-    if (!expiresAt) {
+    if (!expiresAt) return
+
+    const delay = expiresAt.getTime() - this.config.refreshBuffer * 1000 - Date.now()
+    if (delay <= 0) return
+
+    this.startRefreshTimer(delay, 1)
+  }
+
+  private startRefreshTimer(delayMs: number, attempt: number): void {
+    const timer = setTimeout(() => {
+      void this.attemptAutoRefresh(attempt)
+    }, delayMs)
+    // Auto-refresh must not keep the process alive on its own
+    timer.unref?.()
+    this.refreshTimerId = timer
+  }
+
+  private clearRefreshTimer(): void {
+    if (!this.refreshTimerId) return
+    clearTimeout(this.refreshTimerId)
+    this.refreshTimerId = undefined
+  }
+
+  private async attemptAutoRefresh(attempt: number): Promise<void> {
+    try {
+      await this.refreshAccessToken()
       return
+    } catch (error) {
+      const canRetry = attempt < AUTO_REFRESH_MAX_ATTEMPTS && isRetryableRefreshError(error)
+      this.logger.error('Auto-refresh failed', {
+        attempt,
+        willRetry: canRetry,
+        error: error instanceof Error ? error.message : String(error),
+      })
+
+      if (canRetry) {
+        this.startRefreshTimer(
+          this.config.autoRefreshRetryDelayMs * 2 ** (attempt - 1),
+          attempt + 1,
+        )
+        return
+      }
+
+      await this.notifyAutoRefreshFailure(error, attempt)
     }
+  }
 
-    const now = Date.now()
-    const expiryTime = expiresAt.getTime()
-    const refreshTime = expiryTime - this.config.refreshBuffer * 1000
-    const delay = refreshTime - now
-
-    if (delay > 0) {
-      this.refreshTimerId = setTimeout(async () => {
-        try {
-          await this.refreshAccessToken()
-        } catch (error) {
-          this.logger.error('Auto-refresh failed', {
-            error: error instanceof Error ? error.message : String(error),
-          })
-        }
-      }, delay)
+  private async notifyAutoRefreshFailure(error: unknown, attempts: number): Promise<void> {
+    if (!this.config.onAutoRefreshError) return
+    try {
+      await this.config.onAutoRefreshError(error, attempts)
+    } catch (callbackError) {
+      this.logger.error('onAutoRefreshError callback threw', {
+        error: callbackError instanceof Error ? callbackError.message : String(callbackError),
+      })
     }
   }
 
   /**
-   * Initialize sub-clients (lazy initialization)
+   * Create the HttpClient and sub-clients on first use; afterwards update the
+   * existing HttpClient in place so sub-clients held by callers never go stale.
    */
-  private initializeClients(): void {
-    if (!this.httpClient) {
-      throw new Error('HttpClient not initialized')
+  private applyCredentials(apiServer: string, accessToken: string): void {
+    if (this.httpClient) {
+      this.httpClient.updateCredentials(apiServer, accessToken)
+      return
     }
 
+    this.httpClient = new HttpClient(
+      apiServer,
+      accessToken,
+      this.logger,
+      this.config.httpLogOptions,
+      this.config.requestTimeoutMs,
+    )
     this._accounts = new AccountsClient(this.httpClient)
     this._market = new MarketClient(this.httpClient)
   }
@@ -438,20 +525,40 @@ export class QuestradeClient {
    */
   public setHttpLogOptions(options: HttpLogOptions): void {
     this.config.httpLogOptions = options
+    this.httpClient?.setLogOptions(options)
   }
 
   /**
    * Check if the current token is expired
+   *
+   * @throws Error in access-token-only mode (accessToken + apiServer), where the
+   * expiry time is unknown and a boolean answer would be a guess. Use a
+   * refreshToken if you need expiry tracking.
    */
   isTokenExpired(): boolean {
+    this.assertTokenExpiryIsKnown('isTokenExpired')
     return this.authClient.isTokenExpired()
   }
 
   /**
    * Check if the current token will expire soon
+   *
+   * @throws Error in access-token-only mode (accessToken + apiServer); see isTokenExpired
    */
   isTokenExpiringSoon(bufferSeconds?: number): boolean {
+    this.assertTokenExpiryIsKnown('isTokenExpiringSoon')
     return this.authClient.isTokenExpiringSoon(bufferSeconds)
+  }
+
+  private assertTokenExpiryIsKnown(methodName: string): void {
+    if (!this.isAccessTokenOnlyMode()) return
+    throw new Error(
+      `${methodName}() is unavailable in access-token-only mode: the expiry time of a caller-supplied access token is unknown. Provide a refreshToken to enable expiry tracking.`,
+    )
+  }
+
+  private isAccessTokenOnlyMode(): boolean {
+    return Boolean(this.config.accessToken && this.config.apiServer)
   }
 
   /**
@@ -465,9 +572,6 @@ export class QuestradeClient {
    * Cleanup resources (timers, etc.)
    */
   dispose(): void {
-    if (this.refreshTimerId) {
-      clearTimeout(this.refreshTimerId)
-      this.refreshTimerId = undefined
-    }
+    this.clearRefreshTimer()
   }
 }

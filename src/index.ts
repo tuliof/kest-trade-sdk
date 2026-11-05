@@ -17,6 +17,8 @@ export {
   type ITokenStorage,
   type MemoryStorageConfig,
   MemoryTokenStorage,
+  resolveSecretsBackend,
+  type SecretsBackend,
   type SecureStorageConfig,
   SecureTokenStorage,
   type StorageConfig,
@@ -45,12 +47,17 @@ export type {
   Account,
   AccountsResponse,
 } from './types/accounts'
+// Zod schemas
+export {
+  AccountSchema,
+  AccountsResponseSchema,
+} from './types/accounts'
 // Type definitions
 export type {
   // Auth types
   TokenResponse,
 } from './types/auth'
-
+export { TokenResponseSchema } from './types/auth'
 export type {
   // Balance types
   Balance,
@@ -58,7 +65,13 @@ export type {
   Currency,
 } from './types/balances'
 export {
+  BalanceSchema,
+  BalancesResponseSchema,
+  CurrencySchema,
+} from './types/balances'
+export {
   type APIError,
+  APIErrorSchema,
   AuthenticationError,
   NetworkError,
   // Error types
@@ -66,7 +79,6 @@ export {
   RateLimitError,
   ValidationError,
 } from './types/errors'
-
 export type {
   Candle,
   CandleInterval,
@@ -85,7 +97,24 @@ export type {
   SymbolSearchResponse,
   SymbolsResponse,
 } from './types/market'
-
+export {
+  CandleIntervalSchema,
+  CandleSchema,
+  CandlesResponseSchema,
+  ListingExchangeSchema,
+  MarketSchema,
+  MarketsResponseSchema,
+  OptionChainEntrySchema,
+  OptionChainResponseSchema,
+  OptionTypeSchema,
+  QuoteSchema,
+  QuotesResponseSchema,
+  SecurityTypeSchema,
+  SymbolSchema,
+  SymbolSearchResponseSchema,
+  SymbolSearchResultSchema,
+  SymbolsResponseSchema,
+} from './types/market'
 export type {
   ActivitiesResponse,
   Activity,
@@ -96,10 +125,28 @@ export type {
   OrderLeg,
   OrderSide,
   OrderState,
+  OrderStateFilter,
   OrdersResponse,
   OrderType,
   // Position types
   Position,
   PositionsResponse,
   TimeInForce,
+} from './types/positions'
+export {
+  ActivitiesResponseSchema,
+  ActivitySchema,
+  ActivityTypeSchema,
+  ExecutionSchema,
+  ExecutionsResponseSchema,
+  OrderLegSchema,
+  OrderSchema,
+  OrderSideSchema,
+  OrderStateFilterSchema,
+  OrderStateSchema,
+  OrdersResponseSchema,
+  OrderTypeSchema,
+  PositionSchema,
+  PositionsResponseSchema,
+  TimeInForceSchema,
 } from './types/positions'

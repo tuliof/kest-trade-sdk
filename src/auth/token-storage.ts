@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
-import { unlink, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 import { type Logger, SilentLogger } from '@/logger'
 
 /**
@@ -36,7 +38,8 @@ export const TokenStorageType = {
 export interface ITokenStorage {
   /**
    * Retrieve the stored refresh token
-   * @returns The refresh token or null if not found
+   * @returns The refresh token, or null only when none is stored
+   * @throws Error when the backing store cannot be read (permissions, keychain failure)
    */
   get(): Promise<string | null>
 
@@ -174,42 +177,70 @@ export function createTokenStorage(
 }
 
 /**
+ * Minimal contract of the Bun.secrets API used by SecureTokenStorage.
+ * Declared locally so the published typings do not depend on Bun's globals.
+ */
+export interface SecretsBackend {
+  get(options: { service: string; name: string }): Promise<string | null>
+  set(options: { service: string; name: string; value: string }): Promise<void>
+  delete(options: { service: string; name: string }): Promise<boolean>
+}
+
+/**
+ * Resolve the secrets backend from a Bun runtime object.
+ * @throws Error if the runtime is not Bun or does not expose Bun.secrets
+ */
+export function resolveSecretsBackend(
+  bunRuntime: { secrets?: SecretsBackend } | undefined,
+): SecretsBackend {
+  const secrets = bunRuntime?.secrets
+  if (!secrets) {
+    throw new Error(
+      'SecureTokenStorage requires the Bun runtime (Bun.secrets). Run under Bun >= 1.3 or use tokenStorage "env" or "memory" instead.',
+    )
+  }
+  return secrets
+}
+
+/**
  * Secure token storage using Bun.secrets
  * Stores tokens in OS-native credential storage:
  * - macOS: Keychain
  * - Windows: Credential Manager
  * - Linux: Secret Service API
+ *
+ * Requires the Bun runtime; every operation throws a descriptive error otherwise.
  */
 export class SecureTokenStorage implements ITokenStorage {
   private readonly service: string
   private readonly name: string
   private readonly logger: Logger
+  private readonly injectedSecrets?: SecretsBackend
 
+  /**
+   * @param secrets - Secrets backend override (defaults to Bun.secrets); mainly for tests
+   */
   constructor(
     name: string = 'refresh-token',
     service: string = 'kest-trade-sdk',
     logger: Logger = new SilentLogger(),
+    secrets?: SecretsBackend,
   ) {
     this.name = name
     this.service = service
     this.logger = logger
+    this.injectedSecrets = secrets
   }
 
-  private get secrets() {
-    return (globalThis as Record<string, unknown>).secrets
+  private get secrets(): SecretsBackend {
+    return (
+      this.injectedSecrets ??
+      resolveSecretsBackend((globalThis as { Bun?: { secrets?: SecretsBackend } }).Bun)
+    )
   }
 
   async get(): Promise<string | null> {
-    const secrets = this.secrets as
-      | {
-          get: (opts: { service: string; name: string }) => Promise<string | null>
-        }
-      | undefined
-
-    if (!secrets?.get) {
-      this.logger.warn('Bun.secrets not available in this environment')
-      return null
-    }
+    const secrets = this.secrets
 
     try {
       const token = await secrets.get({
@@ -218,22 +249,26 @@ export class SecureTokenStorage implements ITokenStorage {
       })
       return token || null
     } catch (error) {
-      this.logger.warn('Failed to retrieve token from secure storage', {
+      this.logger.error('Failed to retrieve token from secure storage', {
         error: error instanceof Error ? error.message : String(error),
       })
-      return null
+      throw new Error(
+        `Failed to read token from secure storage (service "${this.service}", name "${this.name}"): ${error instanceof Error ? error.message : String(error)}. Check that the OS keychain is available and unlocked.`,
+        { cause: error },
+      )
     }
   }
 
   async set(refreshToken: string): Promise<void> {
-    const secrets = this.secrets as
-      | {
-          set: (opts: { service: string; name: string; value: string }) => Promise<void>
-        }
-      | undefined
-
-    if (!secrets?.set) {
-      throw new TokenStorageError('Bun.secrets is not available in this environment', refreshToken)
+    let secrets: SecretsBackend
+    try {
+      secrets = this.secrets
+    } catch (error) {
+      throw new TokenStorageError(
+        error instanceof Error ? error.message : String(error),
+        refreshToken,
+        { cause: error },
+      )
     }
 
     try {
@@ -251,23 +286,12 @@ export class SecureTokenStorage implements ITokenStorage {
   }
 
   async delete(): Promise<void> {
-    const secrets = this.secrets as
-      | {
-          set: (opts: { service: string; name: string; value: string }) => Promise<void>
-        }
-      | undefined
+    const secrets = this.secrets
 
-    if (!secrets?.set) {
-      throw new Error('Bun.secrets is not available')
-    }
-
-    // TODO: Replace with Bun.secrets.delete when available
-    // Currently sets value to empty string as workaround (entry persists in keychain)
     try {
-      await secrets.set({
+      await secrets.delete({
         service: this.service,
         name: this.name,
-        value: '',
       })
       this.logger.info('Token deleted from secure storage')
     } catch (error) {
@@ -277,6 +301,19 @@ export class SecureTokenStorage implements ITokenStorage {
       throw error
     }
   }
+}
+
+/**
+ * Normalize a raw .env value: drop a trailing carriage return (CRLF files)
+ * and one pair of matching surrounding quotes.
+ */
+export function parseEnvValue(rawValue: string): string {
+  const value = rawValue.replace(/\r$/, '')
+  const isQuoted =
+    value.length >= 2 &&
+    (value.startsWith('"') || value.startsWith("'")) &&
+    value.endsWith(value[0] as string)
+  return isQuoted ? value.slice(1, -1) : value
 }
 
 /**
@@ -302,72 +339,79 @@ export class EnvTokenStorage implements ITokenStorage {
     return this.varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   }
 
+  private variableLinePattern(): RegExp {
+    return new RegExp(`^${this.escapeVarName()}=.*$`, 'm')
+  }
+
+  private async writeFileAtomically(fullPath: string, content: string): Promise<void> {
+    const tempPath = join(
+      dirname(fullPath),
+      `.${basename(fullPath)}.${randomBytes(6).toString('hex')}.tmp`,
+    )
+    try {
+      await writeFile(tempPath, content, { mode: 0o600 })
+      await rename(tempPath, fullPath)
+    } catch (error) {
+      await unlink(tempPath).catch(() => {})
+      throw error
+    }
+  }
+
+  private resolveFullPath(): string {
+    return resolve(this.envPath)
+  }
+
+  private async readEnvFileIfPresent(fullPath: string): Promise<string | null> {
+    try {
+      return await readFile(fullPath, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
+
   async get(): Promise<string | null> {
     try {
-      if (typeof process === 'undefined' || !process.cwd) {
-        return null
-      }
+      const content = await this.readEnvFileIfPresent(this.resolveFullPath())
+      if (content === null) return null
 
-      const fullPath = this.envPath.startsWith('/')
-        ? this.envPath
-        : `${process.cwd()}/${this.envPath}`
-
-      const envFile = Bun.file(fullPath)
-      const exists = await envFile.exists()
-
-      if (!exists) {
-        return null
-      }
-
-      const content = await envFile.text()
       const match = content.match(new RegExp(`^${this.escapeVarName()}=(.*)$`, 'm'))
 
-      return match?.[1] || null
+      return parseEnvValue(match?.[1] ?? '') || null
     } catch (error) {
-      this.logger.warn(`Failed to read token from ${this.envPath}`, {
+      this.logger.error(`Failed to read token from ${this.envPath}`, {
         error: error instanceof Error ? error.message : String(error),
       })
-      return null
+      throw new Error(
+        `Failed to read token from ${this.envPath}: ${error instanceof Error ? error.message : String(error)}. Check that the file is readable.`,
+        { cause: error },
+      )
     }
   }
 
   async set(refreshToken: string): Promise<void> {
-    if (typeof process === 'undefined' || !process.cwd) {
-      throw new TokenStorageError('Cannot save token: not in Node.js/Bun environment', refreshToken)
-    }
-
-    const fullPath = this.envPath.startsWith('/')
-      ? this.envPath
-      : `${process.cwd()}/${this.envPath}`
-
     try {
-      const envFile = Bun.file(fullPath)
-      const exists = await envFile.exists()
+      const fullPath = this.resolveFullPath()
+      const envContent = await this.readEnvFileIfPresent(fullPath)
 
-      if (!exists) {
-        await writeFile(fullPath, `${this.varName}=${refreshToken}\n`, { mode: 0o600 })
+      if (envContent === null) {
+        await this.writeFileAtomically(fullPath, `${this.varName}=${refreshToken}\n`)
         this.logger.info('Token saved to new file', { path: this.envPath })
         return
       }
 
-      const envContent = await envFile.text()
+      const variableLine = this.variableLinePattern()
 
-      if (envContent.includes(`${this.varName}=`)) {
-        const updated = envContent.replace(
-          new RegExp(`${this.escapeVarName()}=.*`),
-          `${this.varName}=${refreshToken}`,
-        )
-        await writeFile(fullPath, updated, { mode: 0o600 })
+      if (variableLine.test(envContent)) {
+        const updated = envContent.replace(variableLine, () => `${this.varName}=${refreshToken}`)
+        await this.writeFileAtomically(fullPath, updated)
         this.logger.info('Token refreshed and saved', { path: this.envPath })
       } else {
         const updated = `${envContent.trimEnd()}\n${this.varName}=${refreshToken}\n`
-        await writeFile(fullPath, updated, { mode: 0o600 })
+        await this.writeFileAtomically(fullPath, updated)
         this.logger.info('Token saved', { path: this.envPath })
       }
     } catch (error) {
-      if (error instanceof TokenStorageError) {
-        throw error
-      }
       throw new TokenStorageError(`Failed to save token to ${this.envPath}`, refreshToken, {
         cause: error,
       })
@@ -376,29 +420,17 @@ export class EnvTokenStorage implements ITokenStorage {
 
   async delete(): Promise<void> {
     try {
-      if (typeof process === 'undefined' || !process.cwd) {
-        return
-      }
+      const fullPath = this.resolveFullPath()
+      const content = await this.readEnvFileIfPresent(fullPath)
+      if (content === null) return
 
-      const fullPath = this.envPath.startsWith('/')
-        ? this.envPath
-        : `${process.cwd()}/${this.envPath}`
-
-      const envFile = Bun.file(fullPath)
-      const exists = await envFile.exists()
-
-      if (!exists) {
-        return
-      }
-
-      const content = await envFile.text()
       const updated = content.replace(new RegExp(`^${this.escapeVarName()}=.*\n?`, 'm'), '')
 
       if (updated.trim() === '') {
         await unlink(fullPath)
         this.logger.info('File deleted (was only token)', { path: this.envPath })
       } else {
-        await writeFile(fullPath, updated, { mode: 0o600 })
+        await this.writeFileAtomically(fullPath, updated)
         this.logger.info('Token removed from file', { path: this.envPath })
       }
     } catch (error) {

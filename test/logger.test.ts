@@ -5,8 +5,8 @@ import {
   createLogger,
   type LogContext,
   type Logger,
-  type LogLevel,
   SilentLogger,
+  serializeContext,
 } from '@/logger'
 
 describe('SilentLogger', () => {
@@ -194,4 +194,73 @@ describe('Logger interface compliance', () => {
       expect(() => logger.error('msg', { ctx: true } as LogContext)).not.toThrow()
     })
   }
+})
+
+describe('serializeContext', () => {
+  test('should keep name, message and own properties of Errors', () => {
+    const error = Object.assign(new Error('boom'), { statusCode: 502 })
+    const parsed = JSON.parse(serializeContext({ error }))
+    expect(parsed.error).toEqual({ name: 'Error', message: 'boom', statusCode: 502 })
+  })
+
+  test('should serialize the cause chain of Errors', () => {
+    const error = new Error('outer', { cause: new TypeError('inner') })
+    const parsed = JSON.parse(serializeContext({ error }))
+    expect(parsed.error.cause).toEqual({ name: 'TypeError', message: 'inner' })
+  })
+
+  test('should render BigInt values as strings', () => {
+    const parsed = JSON.parse(serializeContext({ volume: 12345678901234567890n }))
+    expect(parsed.volume).toBe('12345678901234567890')
+  })
+
+  test('should mark circular references instead of throwing', () => {
+    const node: Record<string, unknown> = { name: 'root' }
+    node.self = node
+    const parsed = JSON.parse(serializeContext({ node }))
+    expect(parsed.node).toEqual({ name: 'root', self: '[Circular]' })
+  })
+
+  test('should not flag repeated non-circular references', () => {
+    const shared = { a: 1 }
+    const parsed = JSON.parse(serializeContext({ first: shared, second: shared }))
+    expect(parsed).toEqual({ first: { a: 1 }, second: { a: 1 } })
+  })
+
+  test('should not throw when a getter throws', () => {
+    const hostile = {
+      get value(): string {
+        throw new Error('getter failed')
+      },
+    }
+    expect(() => serializeContext({ hostile })).not.toThrow()
+    expect(serializeContext({ hostile })).toContain('getter failed')
+  })
+
+  test('should serialize dates as ISO strings and keep plain values', () => {
+    const parsed = JSON.parse(
+      serializeContext({ at: new Date('2024-01-02T03:04:05.000Z'), n: 1, s: 'x', nil: null }),
+    )
+    expect(parsed).toEqual({ at: '2024-01-02T03:04:05.000Z', n: 1, s: 'x', nil: null })
+  })
+})
+
+describe('ConsoleLogger with hostile contexts', () => {
+  test('should include the Error message and never throw', () => {
+    const originalError = console.error
+    const lines: string[] = []
+    console.error = ((line: string) => lines.push(line)) as typeof console.error
+    try {
+      const circular: Record<string, unknown> = {}
+      circular.self = circular
+      const logger = new ConsoleLogger('debug')
+      expect(() =>
+        logger.error('failed', { error: new Error('disk full'), circular, big: 1n }),
+      ).not.toThrow()
+      expect(lines[0]).toContain('disk full')
+      expect(lines[0]).toContain('[Circular]')
+    } finally {
+      console.error = originalError
+    }
+  })
 })
